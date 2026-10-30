@@ -15,7 +15,7 @@
 <style>
 :root{--bg:#F3F5F8;--card:#FFFFFF;--ink:#1B2430;--sub:#5B6675;--line:#E4E8EE;--blue:#2458C6;--blueSoft:#E6EDFB;--blueInk:#1A3F8F;
 --red:#B42318;--redSoft:#FBE9E7;--redInk:#8A1C12;--green:#1E7A4C;--greenSoft:#E3F4EA;--amber:#C77700;--amberSoft:#FFF4D6;--amberInk:#7A4B00;
---orange:#D9822B;--gray:#8A94A3}
+--orange:#D9822B;--gray:#8A94A3;--main:#2458C6;--soft:#E6EDFB;--tint:#1A3F8F}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none;background:var(--bg);color:var(--ink);font-family:'Noto Sans TC','PingFang TC',system-ui,sans-serif;-webkit-tap-highlight-color:transparent;-webkit-text-size-adjust:100%}
 button{font-family:inherit;font-size:inherit;color:inherit}
@@ -165,7 +165,7 @@ function openSetup(msg) {
     '<div class="sub" style="font-size:13px;line-height:1.6">貼上 Apps Script 部署的網址（結尾是 /exec?k=你的密碼）。只需要設定一次，資料只存在這支手機上。</div>' +
     (msg ? '<div class="over" style="font-size:13px">' + esc(msg) + '</div>' : '') +
     '<input class="f" id="cfgUrl" placeholder="https://script.google.com/macros/s/…/exec?k=…" value="' + esc(CFG ? CFG.url + '?k=' + CFG.k : '') + '">' +
-    '<button class="submit" data-cfg="save">連線並儲存</button>' + (CFG ? '<button class="chip" data-cfg="cancel" style="align-self:center;border:none">取消</button>' : ''));
+    '<button class="submit" data-cfg="save" style="background:#2458C6;color:#fff">連線並儲存</button>' + (CFG ? '<button class="chip" data-cfg="cancel" style="align-self:center;border:1px solid #D5DBE3">取消</button>' : ''));
   $('modalBox').onclick = function (e) {
     const b = e.target.closest('[data-cfg]'); if (!b) return;
     if (b.dataset.cfg === 'cancel') return closeModal();
