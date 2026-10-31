@@ -188,7 +188,7 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.10.31-2318';
+const APP_VERSION = '2026.10.31-2337';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -544,6 +544,7 @@ function renderToday() {
           return '<div class="row" style="padding:10px 0;border-bottom:1px solid var(--chip);align-items:flex-start"><span class="tag" style="background:var(--chip);color:var(--ink)">' + (i + 1) + '</span>' +
             '<div class="col" style="flex:1;gap:2px"><span style="font-size:14px;font-weight:500">' + esc(x.from) + ' → ' + esc(x.to) + '</span><span class="sub" style="font-size:12px;line-height:1.4">' + esc(x.note) + '</span></div><b style="font-size:16px">$' + fmt(x.amount) + '</b></div>';
         }).join('') +
+        (p.debts && p.debts.length ? '<div style="margin-top:10px;padding:10px 12px;border-radius:12px;background:var(--amberSoft);color:var(--amberInk);font-size:13px;line-height:1.5"><b>別忘了補回缺口：</b>' + p.debts.map(function (x) { return esc(x.name) + ' $' + fmt(x.amount); }).join('；') + '。補上後在今日建議按「已補上」。</div>' : '') +
         '<div class="sub" style="font-size:13px;margin:10px 0 0">完成後，本月生活預算 $' + fmt(d.budget) + '</div>' +
         '<button class="submit" style="background:var(--green)" data-act="allocdone">我已完成分配</button></div>';
     } else {
@@ -561,7 +562,8 @@ function renderToday() {
   h += '<div class="card"><span class="sub">本月已花</span><div class="mid">$' + fmt(d.spent) + '</div><span class="sub" style="font-size:12px">' + d.count + ' 筆｜刷卡 $' + fmt(d.cardSpent) + '</span>' + cmpLine(d.spent, d.cmp, true) + '</div>';
   h += '</div><div class="grid2"><div class="card"><b style="font-size:15px">今日建議</b>' + d.tips.map(function (t) {
     return '<div class="tip">' + (ICON[t.level] || ICON.info) + '<div class="col" style="flex:1"><span>' + esc(t.text) + '</span>' +
-      (t.action === 'circle' ? '<button class="chip" data-act="circle" style="height:36px;align-self:flex-start;margin-top:4px">我已圈存</button>' : '') + '</div></div>';
+      (t.action === 'circle' ? '<button class="chip" data-act="circle" style="height:36px;align-self:flex-start;margin-top:4px">我已圈存</button>' : '') +
+      (t.action === 'debt' ? '<button class="chip" data-act="debt" data-row="' + t.row + '" data-y="' + t.y + '" style="height:36px;align-self:flex-start;margin-top:4px">已補上</button>' : '') + '</div></div>';
   }).join('') + '</div>';
   const iv = d.invest;
   if (iv.mode === 'emergency') {
@@ -592,6 +594,13 @@ $('v-today').addEventListener('click', function (e) {
     if (done && !confirm('確定已完成本月所有轉帳？')) return;
     al.disabled = true;
     call('allocDone', { y: S.dash.y, m: S.dash.m, done: done }).then(function (p) { S.dash.payday = p; toast(done ? '已記錄完成本月分配' : '已取消完成標記'); renderToday(); }).catch(err);
+    return;
+  }
+  const db = e.target.closest('[data-act="debt"]');
+  if (db) {
+    if (!confirm('確定這筆缺口已經補上？之後就不會再提醒。')) return;
+    db.disabled = true;
+    call('debtDone', { y: +db.dataset.y, row: +db.dataset.row }).then(function (r) { toast(r.message); loadToday(true); }).catch(err);
     return;
   }
   const b = e.target.closest('[data-act="circle"]'); if (!b) return;
