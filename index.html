@@ -95,12 +95,24 @@ nav#nav{order:3;flex-shrink:0;background:var(--card);border-top:1px solid var(--
 #modal .box{background:var(--card);border-radius:20px;padding:16px;width:min(380px,92vw);display:flex;flex-direction:column;gap:12px;max-height:85vh;overflow:auto}
 input.f,select.f{height:44px;border-radius:12px;border:1px solid var(--line2);padding:0 12px;width:100%;background:var(--card)}
 /* 記帳 */
-.entry{--main:var(--blue);--soft:var(--blueSoft);--tint:var(--blueInk)}
-.entry.card-mode{--main:var(--red);--soft:var(--redSoft);--tint:var(--redInk)}
+.entry{--main:var(--blue);--soft:var(--blueSoft);--tint:var(--blueInk);--fillC:#C9D8F6;--pendC:#7FA2E8;--overC:#E58A80}
+.entry.card-mode{--main:var(--red);--soft:var(--redSoft);--tint:var(--redInk);--fillC:#F3CBC6;--pendC:#E08A80;--overC:#B42318}
+html[data-theme="dark"] .entry{--fillC:#2A4373;--pendC:#5B8DEF;--overC:#E5675C}
+html[data-theme="dark"] .entry.card-mode{--fillC:#5A2B27;--pendC:#E5675C;--overC:#F4ADA5}
 .seg{height:48px;border-radius:14px;border:1px solid var(--line2);background:var(--card);color:var(--sub);font-size:16px}
 .seg.cash.on{border:none;background:var(--blue);color:var(--onMain);font-weight:700}
 .seg.cardb.on{border:none;background:var(--red);color:var(--onMain);font-weight:700}
-.amount{background:var(--soft);border:2px solid var(--main);border-radius:18px;padding:10px 18px;margin:10px 0}
+.amount{position:relative;overflow:hidden;background:var(--soft);border:2px solid var(--main);border-radius:18px;padding:10px 18px;margin:10px 0}
+.amount>*{position:relative;z-index:1}
+.amount .fill,.amount .pend{position:absolute;top:0;bottom:0;left:0;z-index:0;transition:width .25s}
+.amount .fill{background:var(--fillC)}
+.amount .fill.over{background:var(--overC);opacity:.45}
+.amount .pend{background:repeating-linear-gradient(135deg,var(--pendC) 0 6px,transparent 6px 12px)}
+.amount .pend.over{background:repeating-linear-gradient(135deg,var(--overC) 0 6px,transparent 6px 12px)}
+.amount .tick{position:absolute;top:0;bottom:0;width:2px;background:var(--tint);opacity:.55;z-index:0}
+.binfo{font-size:12px;color:var(--tint);line-height:1.5;margin-top:2px}
+.binfo b{font-weight:700}
+.binfo .warn{color:var(--red);font-weight:700}
 .amount .v{font-size:40px;font-weight:700;color:var(--tint);text-align:right}
 .keys{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
 .keys button{height:48px;border-radius:14px;border:none;background:var(--card);font-size:22px}
@@ -175,7 +187,7 @@ input.f,select.f{height:44px;border-radius:12px;border:1px solid var(--line2);pa
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.10.31-0023';
+const APP_VERSION = '2026.10.31-0032';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -397,6 +409,19 @@ function show(view) {
 $('nav').addEventListener('click', function (e) { const b = e.target.closest('.navbtn'); if (b && b.dataset.view) show(b.dataset.view); });
 
 // ---------- 記帳 ----------
+function catBudgetInfo() {
+  const d = S.dash, E = S.e;
+  if (!d || !d.cats) return null;
+  const sameMonth = +E.date.slice(0, 4) === d.y && +E.date.slice(5, 7) === d.m;
+  if (!sameMonth) return { other: true };
+  const c = d.cats.filter(function (x) { return x.name === E.cat; })[0];
+  if (!c) return null;
+  const v = evalExpr(E.amt), add = isNaN(v) ? 0 : Math.max(0, v);
+  const rem = c.budget - c.total, after = rem - add;
+  return { c: c, add: add, rem: rem, after: after, perDay: d.daysLeft ? Math.max(0, rem) / d.daysLeft : Math.max(0, rem),
+           usedPct: c.budget ? Math.min(100, c.total / c.budget * 100) : 0,
+           newPct: c.budget ? Math.min(100, (c.total + add) / c.budget * 100) : 0, time: d.timeRatio * 100 };
+}
 function renderEntry() {
   const f = S.form, E = S.e, el = $('v-entry');
   if (!f) { el.innerHTML = '<div class="loading">載入中…</div>'; return; }
@@ -407,7 +432,20 @@ function renderEntry() {
   let h = '<div class="row"><div class="col"><span class="sub">' + (S.dash ? S.dash.y + '年' + S.dash.m + '月｜' : '') + '本月還能花</span><span style="font-size:20px;font-weight:700">' + leftTxt + '</span></div>' +
     '<div style="display:flex;gap:6px;align-items:center">' + themeBtn(40) + '<button class="datebtn ' + (isToday ? '' : 'past') + '" data-act="date">' + (isToday ? '今天 ' : '補記 ') + md(E.date) + '（' + wk(E.date) + '）</button></div></div>';
   h += '<div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);margin-top:12px"><button class="seg cash ' + (E.pay === '現金' ? 'on' : '') + '" data-act="pay" data-v="現金">現金</button><button class="seg cardb ' + (E.pay === '信用卡' ? 'on' : '') + '" data-act="pay" data-v="信用卡">信用卡</button></div>';
-  h += '<div class="amount"><div style="font-size:12px;font-weight:500;color:var(--tint)">' + (E.pay === '現金' ? '計入：現金實支' : '計入：刷卡實支（' + (+E.date.slice(8, 10) <= 22 ? '本期帳單，次月 6 日扣款' : '下期帳單，下下月 6 日扣款') + '）') + '</div><div class="expr">' + esc(exprDisplay(E.amt).small) + '</div><div class="v">$' + exprDisplay(E.amt).big + '</div></div>';
+  const bi = catBudgetInfo();
+  let bar = '', info = '';
+  if (bi && bi.other) info = '<div class="binfo">補記其他月份，不顯示本月科目進度</div>';
+  else if (bi && bi.c.travel) info = '<div class="binfo">' + esc(E.cat) + '：國旅專款不扣日常預算｜本月已用 <b>$' + fmt(bi.c.total) + '</b></div>';
+  else if (bi && !bi.c.budget) info = '<div class="binfo">' + esc(E.cat) + '：本月沒有編列預算｜已用 <b>$' + fmt(bi.c.total) + '</b></div>';
+  else if (bi) {
+    bar = '<i class="fill' + (bi.rem < 0 || bi.after < 0 ? ' over' : '') + '" style="width:' + bi.usedPct.toFixed(1) + '%"></i>' +
+      (bi.add ? '<i class="pend' + (bi.after < 0 ? ' over' : '') + '" style="left:' + bi.usedPct.toFixed(1) + '%;width:' + Math.max(0, bi.newPct - bi.usedPct).toFixed(1) + '%"></i>' : '') +
+      '<i class="tick" style="left:' + Math.min(99.5, bi.time).toFixed(1) + '%"></i>';
+    info = '<div class="binfo">' + esc(E.cat) + '｜今日可花 <b>$' + fmt(bi.perDay) + '</b>｜已用 <b>$' + fmt(bi.c.total) + '</b>（' + Math.round(bi.c.total / bi.c.budget * 100) + '%）｜' +
+      (bi.rem >= 0 ? '剩 <b>$' + fmt(bi.rem) + '</b>' : '<span class="warn">已超支 $' + fmt(-bi.rem) + '</span>') + '</div>' +
+      (bi.add ? '<div class="binfo">' + (bi.after >= 0 ? '記完後剩 <b>$' + fmt(bi.after) + '</b>（' + Math.round(bi.newPct) + '%）' : '<span class="warn">記完後將超出預算 $' + fmt(-bi.after) + '</span>') + '</div>' : '');
+  }
+  h += '<div class="amount">' + bar + '<div style="font-size:12px;font-weight:500;color:var(--tint)">' + (E.pay === '現金' ? '計入：現金實支' : '計入：刷卡實支（' + (+E.date.slice(8, 10) <= 22 ? '本期帳單，次月 6 日扣款' : '下期帳單，下下月 6 日扣款') + '）') + '</div>' + info + '<div class="expr">' + esc(exprDisplay(E.amt).small) + '</div><div class="v">$' + exprDisplay(E.amt).big + '</div></div>';
   h += '<div class="lbl">科目</div><div class="cats">' + f.cats.map(function (c) { return '<button class="chip ' + (E.cat === c ? 'on' : '') + '" data-act="cat" data-v="' + esc(c) + '">' + esc(c) + '</button>'; }).join('') + '</div>';
   h += '<div class="lbl">消費項目</div>';
   if (E.custom) {
@@ -470,9 +508,17 @@ function submitEntry() {
   call('add', { date: E.date, cat: E.cat, item: item, amount: amt, pay: E.pay, note: E.note || '' }).then(function (r) {
     toast(r.message + (r.warnFull ? '（本月已接近 500 筆上限）' : ''), 3200);
     E.amt = ''; E.note = ''; E.custom = false; E.customText = '';
-    if (S.dash) S.dash.left = r.left;
+    if (S.dash) {
+      S.dash.left = r.left;
+      const sm = +E.date.slice(0, 4) === S.dash.y && +E.date.slice(5, 7) === S.dash.m;
+      if (sm) {
+        S.dash.cats.forEach(function (c) { if (c.name === E.cat) { c.total += amt; if (E.pay === '現金') c.cash += amt; else c.card += amt; } });
+        if (E.cat !== '國旅') { S.dash.spent += amt; if (E.pay !== '現金') S.dash.cardSpent += amt; S.dash.count += 1; }
+      }
+    }
     renderEntry();
-    clearCaches(); S.dashStale = true; if (S.view === 'today' || window.innerWidth >= 1000) loadToday(true);
+    clearCaches(); S.dashStale = true;
+    call('dashboard', {}).then(function (d) { S.dash = d; S.dashStale = false; lsSet('kakeiboLast', { form: S.form, dash: d }); renderEntry(); if (S.view === 'today' || window.innerWidth >= 1000) renderToday(); }).catch(function () {});
   }).catch(function (e) { err(e); renderEntry(); });
 }
 
