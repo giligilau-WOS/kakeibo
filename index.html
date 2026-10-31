@@ -148,6 +148,7 @@ input.f,select.f{height:44px;border-radius:12px;border:1px solid #D5DBE3;padding
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
+const APP_VERSION = '2026.10.31-0005';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -476,7 +477,7 @@ function renderToday() {
   h += '<div class="card wide-only"><b style="font-size:15px">各科目快覽</b><div class="grid2" style="margin-top:10px">' + d.cats.filter(function (c) { return c.budget > 0; }).map(function (c) {
     const p = PACE[c.pace]; return '<div class="col"><div class="row" style="font-size:13px"><span>' + esc(c.name) + '</span><b class="' + p[1] + '">' + pct(c.total, c.budget) + '%</b></div>' + bar(c.cash, c.card, c.budget) + '</div>';
   }).join('') + '</div></div>';
-  h += '<div style="text-align:center;margin:4px 0 12px"><button class="chip" data-act="cfg" style="height:36px;font-size:13px;color:var(--sub)">連線設定</button></div>';
+  h += '<div style="text-align:center;margin:4px 0 12px"><button class="chip" data-act="cfg" style="height:36px;font-size:13px;color:var(--sub)">連線設定</button><div class="sub" style="font-size:11px;margin-top:6px">版本 ' + APP_VERSION + '</div></div>';
   el.innerHTML = h;
 }
 $('v-today').addEventListener('click', function (e) {
@@ -1271,6 +1272,19 @@ function closeModal() { $('modal').style.display = 'none'; $('modalBox').onclick
 $('modal').addEventListener('click', function (e) { if (e.target.id === 'modal') closeModal(); });
 
 // ---------- 啟動 ----------
+function checkUpdate() {
+  fetch('./?check=' + Date.now(), { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (t) {
+    const m = t.match(/APP_VERSION = '([^']+)'/);
+    if (!m || m[1] === APP_VERSION) return;
+    const bar = document.createElement('div');
+    bar.style.cssText = 'position:fixed;left:12px;right:12px;bottom:calc(84px + env(safe-area-inset-bottom));background:#1B2430;color:#fff;border-radius:14px;padding:12px 14px;display:flex;align-items:center;gap:10px;z-index:30;font-size:14px';
+    bar.innerHTML = '<span style="flex:1">有新版本（' + m[1] + '）</span><button style="height:40px;padding:0 16px;border-radius:20px;border:none;background:#2458C6;color:#fff;font-weight:700">立即更新</button>';
+    bar.querySelector('button').onclick = function () { location.replace('./?v=' + encodeURIComponent(m[1])); };
+    document.body.appendChild(bar);
+  }).catch(function () {});
+}
+setTimeout(checkUpdate, 2500);
+document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') checkUpdate(); });
 renderEntry();
 if (!CFG) openSetup();
 else (function boot() {
