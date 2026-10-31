@@ -121,7 +121,7 @@ function matchRows(rows){const idx={};Object.values(S.players).forEach(p=>{idx[n
   if(t&&t.s>=.85&&t.pw>=.8){used[t.pid]=1;res.auto.push({r,pid:t.pid})}else if(t&&t.score>=.5)res.pend.push({r,cands:c.filter(x=>x.score>=.5)});else res.news.push(r)});
  res.missing=Object.values(S.players).filter(p=>!used[p.id]).map(p=>p.id);return res}
 function prepImp(){const im=UI.imp,rows=rowsOf(im.T,im.map);im.rows=rows;im.match=matchRows(rows);const n=Object.keys(S.players).length;im.warn=(rows.length===0)||(n>10&&rows.length<n*.5);im.ok=false}
-function startImport(text,src){try{const T=csv(text);if(T.length<2)throw new Error('資料不足，至少需要標題列與一筆資料');UI.imp={T,map:detect(T[0]),src};UI.err='';prepImp()}catch(e){UI.err=e.message;UI.imp=null}render()}
+function startImport(text,src){const lk=String(text||'').trim();if(/^https?:\/\/\S+$/.test(lk)){UI.url=lk;UI.csv='';toast('這是連結，改用「從連結讀取」');act('impUrl');return}try{const T=csv(text);if(T.length<2)throw new Error('資料不足，至少需要標題列與一筆資料');UI.imp={T,map:detect(T[0]),src};UI.err='';prepImp()}catch(e){UI.err=e.message;UI.imp=null}render()}
 function applyMatch(){const{match:M,src,T,map}=UI.imp,now=Date.now();
  const upd=(p,r)=>{if(r.power>0){p.prev=p.power;p.power=r.power}if(r.al)p.al=r.al;p.intent=r.intent;p.seen=now;p.missing=false};
  const ren=(p,r)=>{if(p.name!==r.name){p.aliases=p.aliases||[];if(!p.aliases.some(a=>a.n===p.name))p.aliases.push({n:p.name});p.name=r.name}S.alias[nz(r.name)]=p.id};
