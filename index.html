@@ -148,7 +148,7 @@ input.f,select.f{height:44px;border-radius:12px;border:1px solid #D5DBE3;padding
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.10.31-0005';
+const APP_VERSION = '2026.10.31-0013';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -246,7 +246,7 @@ const ICON = {
 };
 function monthHeader(ym, prefix, sub) {
   return '<div class="row" style="margin-bottom:12px"><button class="iconbtn" data-act="' + prefix + '-prev" aria-label="上個月">' + ICON.left + '</button>' +
-    '<div class="col" style="align-items:center"><h1>' + ym.y + '年' + ym.m + '月</h1><span class="sub">' + (sub || '左右滑動切換月份') + '</span></div>' +
+    '<div class="col" style="align-items:center"><h1>' + ym.y + '年' + ym.m + '月</h1><span class="sub">' + (sub || '按左右按鈕切換月份') + '</span></div>' +
     '<button class="iconbtn" data-act="' + prefix + '-next" aria-label="下個月">' + ICON.right + '</button></div>';
 }
 
@@ -540,7 +540,6 @@ $('v-charts').addEventListener('click', function (e) {
   if (b.dataset.act === 'ct') { S.ct = +b.dataset.v; return renderChartPane(); }
   if (b.dataset.act === 'opencat') { S.catYM = S.chartYM; S.cat = b.dataset.v; show('cat'); loadCat(); }
 });
-swipe($('v-charts'), function () { S.chartYM = ymAdd(S.chartYM, 1); loadCharts(); }, function () { S.chartYM = ymAdd(S.chartYM, -1); loadCharts(); });
 
 // ---------- 比較工具 ----------
 // 花費類：增加為紅、減少為綠；資產類（good=up）：增加為綠
