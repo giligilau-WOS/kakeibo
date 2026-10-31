@@ -117,8 +117,8 @@ input.f,select.f{height:44px;border-radius:12px;border:1px solid #D5DBE3;padding
 .chartbox.zoomed{touch-action:none;outline:2px solid var(--blueSoft)}
 .zoomer{width:100%;height:100%;transform-origin:0 0;will-change:transform}
 .zoomer svg{display:block}
-.zoomctl{position:absolute;right:4px;top:4px;display:flex;gap:4px}
-.zoomctl button{width:32px;height:32px;border-radius:8px;border:1px solid #D5DBE3;background:rgba(255,255,255,.92);font-size:16px;line-height:1;color:var(--ink)}
+.zoomctl{display:flex;justify-content:flex-end;gap:6px;margin-top:6px}
+.zoomctl button{min-width:40px;height:32px;padding:0 10px;border-radius:16px;border:1px solid #D5DBE3;background:#fff;font-size:15px;line-height:1;color:var(--sub)}
 .ccap{min-height:58px;margin-top:8px}
 .cdots{display:flex;justify-content:center;gap:5px;margin-top:6px}
 .cdots i{display:block;width:6px;height:6px;border-radius:3px;background:#C9D0DA;transition:width .15s}
@@ -293,6 +293,18 @@ function exprDisplay(expr) {
   return { big: !expr ? '0' : (isNaN(v) ? '…' : fmt(v)), small: hasOp(expr) ? expr + ' =' : '' };
 }
 
+// ---------- 本機暫存（開啟時先顯示上次資料）----------
+function lsGet(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+S.monthCache = {}; S.recCache = {}; S.assetCache = {};
+function fresh(entry, ms) { return entry && (Date.now() - entry.t) < ms; }
+function prefetch() {
+  const ym = todayYM(), key = ym.y + '-' + ym.m;
+  if (!S.monthCache[key]) call('month', ym).then(function (d) { S.monthCache[key] = { t: Date.now(), d: d }; }).catch(function () {});
+  if (!S.recCache[key]) call('records', ym).then(function (d) { S.recCache[key] = { t: Date.now(), d: d }; }).catch(function () {});
+}
+function clearCaches() { S.monthCache = {}; S.recCache = {}; S.assetCache = {}; S.trendCache = {}; S.catMoreCache = {}; }
+
 // ---------- 導覽 ----------
 function resetScroll() {
   if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
@@ -408,7 +420,7 @@ function submitEntry() {
     E.amt = ''; E.note = ''; E.custom = false; E.customText = '';
     if (S.dash) S.dash.left = r.left;
     renderEntry();
-    S.dashStale = true; if (S.view === 'today' || window.innerWidth >= 1000) loadToday(true);
+    clearCaches(); S.dashStale = true; if (S.view === 'today' || window.innerWidth >= 1000) loadToday(true);
   }).catch(function (e) { err(e); renderEntry(); });
 }
 
@@ -416,12 +428,13 @@ function submitEntry() {
 function loadToday(force) {
   if (S.dash && !force && !S.dashStale) return renderToday();
   if (!S.dash) $('v-today').innerHTML = '<div class="loading">載入中…</div>';
-  call('dashboard', {}).then(function (d) { S.dash = d; S.dashStale = false; renderToday(); renderEntry(); }).catch(err);
+  call('dashboard', {}).then(function (d) { S.dash = d; S.dashStale = false; lsSet('kakeiboLast', { form: S.form, dash: d }); renderToday(); renderEntry(); }).catch(err);
 }
 function renderToday() {
   const d = S.dash, el = $('v-today');
   const st = d.status === 'over' ? ['over', 'overbg'] : d.status === 'fast' ? ['fast', 'fastbg'] : ['ok', 'okbg'];
-  let h = '<div class="row" style="margin-bottom:12px"><div class="col"><span class="sub">' + d.m + '月' + d.d + '日（' + d.weekday + '）</span><h1>今日看板</h1></div>' +
+  let h = '<div class="row" style="margin-bottom:12px"><div class="col"><span class="sub">' + d.m + '月' + d.d + '日（' + d.weekday + '）' + (S.offline ? '｜顯示上次資料，更新中…' : '') + '</span><h1>今日看板</h1></div>' +
+    '<button class="iconbtn" data-act="refresh" aria-label="重新整理"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>' +
     (d.check ? '<span class="tag ' + (d.check.indexOf('✅') === 0 ? 'ok okbg' : 'over overbg') + '">' + esc(d.check.indexOf('✅') === 0 ? '驗算通過' : '驗算待處理') + '</span>' : '') + '</div>';
   if (d.payday) {
     const p = d.payday;
@@ -468,6 +481,12 @@ function renderToday() {
 }
 $('v-today').addEventListener('click', function (e) {
   if (e.target.closest('[data-act="cfg"]')) return openSetup();
+  const rf = e.target.closest('[data-act="refresh"]');
+  if (rf) {
+    rf.disabled = true; toast('重新讀取試算表…', 1500);
+    call('refresh', {}).then(function (r) { clearCaches(); S.form = r.form; S.dash = r.dashboard; lsSet('kakeiboLast', { form: r.form, dash: r.dashboard }); renderToday(); renderEntry(); toast('已更新'); prefetch(); }).catch(err);
+    return;
+  }
   const al = e.target.closest('[data-act="allocdone"],[data-act="allocundo"]');
   if (al) {
     const done = al.dataset.act === 'allocdone';
@@ -485,9 +504,11 @@ $('v-today').addEventListener('click', function (e) {
 function loadCharts() {
   if (!S.chartYM) S.chartYM = todayYM();
   const ym = S.chartYM, el = $('v-charts');
-  if (S.month && el.innerHTML) { el.classList.add('dim'); const h1 = el.querySelector('h1'); if (h1) h1.textContent = ym.y + '年' + ym.m + '月'; }
+  const key = ym.y + '-' + ym.m, c = S.monthCache[key];
+  if (c) { S.month = c.d; el.classList.remove('dim'); renderCharts(); if (fresh(c, 60000)) return; }
+  else if (S.month && el.innerHTML) { el.classList.add('dim'); const h1 = el.querySelector('h1'); if (h1) h1.textContent = ym.y + '年' + ym.m + '月'; }
   else el.innerHTML = monthHeader(ym, 'ch') + '<div class="loading">載入中…</div>';
-  call('month', ym).then(function (d) { if (d.y !== S.chartYM.y || d.m !== S.chartYM.m) return; el.classList.remove('dim'); S.month = d; renderCharts(); })
+  call('month', ym).then(function (d) { S.monthCache[key] = { t: Date.now(), d: d }; if (d.y !== S.chartYM.y || d.m !== S.chartYM.m) return; el.classList.remove('dim'); S.month = d; renderCharts(); })
     .catch(function (e) { el.classList.remove('dim'); S.month = null; el.innerHTML = monthHeader(ym, 'ch') + '<div class="loading">此月份沒有資料</div>'; });
 }
 function renderCharts() {
@@ -763,7 +784,8 @@ function enableZoom(box, onSwipe) {
   box.addEventListener('mousemove', function (e) { if (md) { st.x = md.sx + e.clientX - md.x; st.y = md.sy + e.clientY - md.y; apply(); } });
   box.addEventListener('mouseup', function () { md = null; });
   box.addEventListener('mouseleave', function () { md = null; });
-  box.addEventListener('click', function (e) {
+  const ctl = document.getElementById(box.id + '-z');
+  if (ctl) ctl.addEventListener('click', function (e) {
     const b = e.target.closest('[data-z]'); if (!b) return;
     e.stopPropagation();
     const W = box.clientWidth / 2, H = box.clientHeight / 2;
@@ -774,7 +796,8 @@ function enableZoom(box, onSwipe) {
   apply();
 }
 function chartBoxHTML(id) {
-  return '<div class="chartbox" id="' + id + '"><div class="zoomer"></div><div class="zoomctl"><button data-z="in" aria-label="放大">＋</button><button data-z="out" aria-label="縮小">−</button><button data-z="reset" aria-label="還原">⟲</button></div></div>';
+  return '<div class="chartbox" id="' + id + '"><div class="zoomer"></div></div>' +
+    '<div class="zoomctl" id="' + id + '-z"><button data-z="in" aria-label="放大">＋</button><button data-z="out" aria-label="縮小">−</button><button data-z="reset" aria-label="還原">⟲ 還原</button></div>';
 }
 
 // ---------- 科目明細 ----------
@@ -932,8 +955,10 @@ $('v-cat').addEventListener('click', function (e) {
 // ---------- 紀錄 ----------
 function loadRecords() {
   if (!S.recYM) S.recYM = todayYM();
-  $('v-records').innerHTML = monthHeader(S.recYM, 'rc', '') + '<div class="loading">載入中…</div>';
-  call('records', S.recYM).then(function (d) { S.rec = d; renderRecords(); }).catch(function () { $('v-records').innerHTML = monthHeader(S.recYM, 'rc', '') + '<div class="loading">此月份沒有資料</div>'; });
+  const key = S.recYM.y + '-' + S.recYM.m, c = S.recCache[key];
+  if (c) { S.rec = c.d; renderRecords(); if (fresh(c, 30000)) return; }
+  else $('v-records').innerHTML = monthHeader(S.recYM, 'rc', '') + '<div class="loading">載入中…</div>';
+  call('records', S.recYM).then(function (d) { S.recCache[key] = { t: Date.now(), d: d }; if (d.y !== S.recYM.y || d.m !== S.recYM.m) return; S.rec = d; renderRecords(); }).catch(function () { $('v-records').innerHTML = monthHeader(S.recYM, 'rc', '') + '<div class="loading">此月份沒有資料</div>'; });
 }
 function renderRecords() {
   const d = S.rec, el = $('v-records');
@@ -984,10 +1009,10 @@ function openEdit(r) {
     const b = e.target.closest('[data-ed]'); if (!b) return;
     const base = { y: S.rec.y, m: S.rec.m, row: r.row };
     if (b.dataset.ed === 'cancel') return closeModal();
-    if (b.dataset.ed === 'del') { if (!confirm('確定刪除這筆紀錄？')) return; call('delete', base).then(function () { closeModal(); toast('已刪除'); loadRecords(); S.dashStale = true; }).catch(err); }
+    if (b.dataset.ed === 'del') { if (!confirm('確定刪除這筆紀錄？')) return; call('delete', base).then(function () { closeModal(); toast('已刪除'); clearCaches(); loadRecords(); S.dashStale = true; }).catch(err); }
     if (b.dataset.ed === 'save') {
       call('update', Object.assign(base, { date: $('edDate').value, cat: $('edCat').value, item: $('edItem').value, amount: $('edAmt').value, pay: $('edPay').value, note: $('edNote').value }))
-        .then(function () { closeModal(); toast('已更新'); loadRecords(); S.dashStale = true; }).catch(err);
+        .then(function () { closeModal(); toast('已更新'); clearCaches(); loadRecords(); S.dashStale = true; }).catch(err);
     }
   };
 }
@@ -1248,13 +1273,19 @@ $('modal').addEventListener('click', function (e) { if (e.target.id === 'modal')
 // ---------- 啟動 ----------
 renderEntry();
 if (!CFG) openSetup();
-else call('form', {}).then(function (f) {
-  S.form = f; S.e.date = f.today; S.e.item = (f.items[S.e.cat] || [])[0] || S.e.cat;
-  renderEntry();
+else (function boot() {
   const startView = window.innerWidth >= 1000 ? 'today' : 'entry';
-  show(startView);
-  loadToday();
-}).catch(err);
+  const last = lsGet('kakeiboLast');
+  const applyForm = function (f) { S.form = f; if (!S.e.date || S.e.date < f.today) S.e.date = f.today; if (!S.e.item) S.e.item = (f.items[S.e.cat] || [])[0] || S.e.cat; };
+  if (last && last.form && last.dash) { S.offline = true; applyForm(last.form); S.e.date = last.form.today; S.dash = last.dash; renderEntry(); show(startView); }
+  call('init', {}).then(function (r) {
+    S.offline = false; applyForm(r.form); S.e.date = r.form.today; S.dash = r.dashboard; S.dashStale = false;
+    lsSet('kakeiboLast', { form: r.form, dash: r.dashboard });
+    renderEntry();
+    if (!last) show(startView); else if (S.view === 'today' || window.innerWidth >= 1000) renderToday();
+    setTimeout(prefetch, 300);
+  }).catch(err);
+})();
 </script>
 </body>
 </html>
