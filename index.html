@@ -96,10 +96,10 @@ nav#nav{order:3;flex-shrink:0;background:var(--card);border-top:1px solid var(--
 #modal .box{background:var(--card);border-radius:20px;padding:16px;width:min(380px,92vw);display:flex;flex-direction:column;gap:12px;max-height:85vh;overflow:auto}
 input.f,select.f{height:44px;border-radius:12px;border:1px solid var(--line2);padding:0 12px;width:100%;background:var(--card)}
 /* 記帳 */
-.entry{--main:var(--blue);--soft:var(--blueSoft);--tint:var(--blueInk);--fillC:#C9D8F6;--pendC:#7FA2E8;--overC:#E58A80}
-.entry.card-mode{--main:var(--cardC);--soft:#FEF6D8;--tint:#7A5300;--fillC:#FBE3A0;--pendC:#D9A406;--overC:#B42318;--onMain:var(--cardOn)}
-html[data-theme="dark"] .entry{--fillC:#2A4373;--pendC:#5B8DEF;--overC:#E5675C}
-html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#5E4A12;--pendC:#F2C230;--overC:#F4ADA5}
+.entry{--main:var(--blue);--soft:var(--blueSoft);--tint:var(--blueInk);--fillC:#C9D8F6;--pendC:#A9C1F2;--overC:#E58A80;--overP:#F4BDB6}
+.entry.card-mode{--main:var(--cardC);--soft:#FEF6D8;--tint:#7A5300;--fillC:#FBE3A0;--pendC:#F6D27A;--overC:#B42318;--overP:#F4BDB6;--onMain:var(--cardOn)}
+html[data-theme="dark"] .entry{--fillC:#2A4373;--pendC:#314F8A;--overC:#E5675C;--overP:#6B2E29}
+html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#5E4A12;--pendC:#735C16;--overC:#F4ADA5;--overP:#6B2E29}
 .seg{height:48px;border-radius:14px;border:1px solid var(--line2);background:var(--card);color:var(--sub);font-size:16px}
 .seg.cash.on{border:none;background:var(--blue);color:var(--onMain);font-weight:700}
 .seg.cardb.on{border:none;background:var(--cardC);color:var(--cardOn);font-weight:700}
@@ -108,8 +108,8 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 .amount .fill,.amount .pend{position:absolute;top:0;bottom:0;left:0;z-index:0;transition:width .25s}
 .amount .fill{background:var(--fillC)}
 .amount .fill.over{background:var(--overC);opacity:.45}
-.amount .pend{background:repeating-linear-gradient(135deg,var(--pendC) 0 6px,transparent 6px 12px)}
-.amount .pend.over{background:repeating-linear-gradient(135deg,var(--overC) 0 6px,transparent 6px 12px)}
+.amount .pend{background:var(--pendC);box-shadow:inset 2px 0 0 var(--main)}
+.amount .pend.over{background:var(--overP);box-shadow:inset 2px 0 0 var(--red)}
 .amount .tick{position:absolute;top:0;bottom:0;width:2px;background:var(--tint);opacity:.55;z-index:0}
 .binfo{font-size:12px;color:var(--tint);line-height:1.5;margin-top:2px}
 .binfo b{font-weight:700}
@@ -188,7 +188,7 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.10.31-0037';
+const APP_VERSION = '2026.10.31-2318';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
