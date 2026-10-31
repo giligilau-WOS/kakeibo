@@ -17,11 +17,11 @@
 :root{--bg:#F3F5F8;--card:#FFFFFF;--ink:#1B2430;--sub:#5B6675;--line:#E4E8EE;--blue:#2458C6;--blueSoft:#E6EDFB;--blueInk:#1A3F8F;
 --red:#B42318;--redSoft:#FBE9E7;--redInk:#8A1C12;--green:#1E7A4C;--greenSoft:#E3F4EA;--amber:#C77700;--amberSoft:#FFF4D6;--amberInk:#7A4B00;
 --orange:#D9822B;--gray:#8A94A3;--main:#2458C6;--soft:#E6EDFB;--tint:#1A3F8F;
---chip:#EEF1F5;--line2:var(--line2);--toast:#1B2430;--toastInk:#FFFFFF;--overSoft:#FDE8E6;--greenInk:#145A37;--onMain:#FFFFFF;color-scheme:light}
+--chip:#EEF1F5;--line2:var(--line2);--toast:#1B2430;--toastInk:#FFFFFF;--overSoft:#FDE8E6;--greenInk:#145A37;--onMain:#FFFFFF;--cardC:#EAB308;--cardInk:#8A5A00;--cardOn:#1B2430;color-scheme:light}
 html[data-theme="dark"]{color-scheme:dark;--bg:#0F1419;--card:#1A2129;--ink:#E6EAF0;--sub:#9AA5B4;--line:#2A323D;--line2:#3A4452;--chip:#252D37;
 --blue:#5B8DEF;--blueSoft:#1D2C4A;--blueInk:#A9C2F7;--red:#E5675C;--redSoft:#3B2220;--redInk:#F4ADA5;--green:#35A26A;--greenSoft:#17332A;--greenInk:#8FE0B5;
 --amber:#E0A030;--amberSoft:#3A2E14;--amberInk:#F2C46D;--orange:#E59A50;--gray:#7D8796;--main:#5B8DEF;--soft:#1D2C4A;--tint:#A9C2F7;
---toast:#E6EAF0;--toastInk:#0F1419;--overSoft:#3B2220;--onMain:#0B1016}
+--toast:#E6EAF0;--toastInk:#0F1419;--overSoft:#3B2220;--onMain:#0B1016;--cardC:#F2C230;--cardInk:#F6D77A;--cardOn:#0B1016}
 html[data-theme="dark"] svg text[fill="#1B2430"]{fill:var(--ink)}
 html[data-theme="dark"] svg text[fill="#5B6675"]{fill:var(--sub)}
 html[data-theme="dark"] svg text[fill="#7A4B00"]{fill:var(--amberInk)}
@@ -29,7 +29,7 @@ html[data-theme="dark"] svg line[stroke="#EEF1F5"],html[data-theme="dark"] svg l
 html[data-theme="dark"] svg [stroke="#fff"]{stroke:var(--card)}
 html[data-theme="dark"] svg circle[fill="#fff"]{fill:var(--card)}
 html[data-theme="dark"] svg [fill="#2458C6"]{fill:#5B8DEF} html[data-theme="dark"] svg [stroke="#2458C6"]{stroke:#5B8DEF}
-html[data-theme="dark"] svg [fill="#B42318"]{fill:#E5675C} html[data-theme="dark"] svg [stroke="#B42318"]{stroke:#E5675C}
+html[data-theme="dark"] svg [fill="#B42318"]{fill:#E5675C} html[data-theme="dark"] svg [fill="#EAB308"]{fill:#F2C230} html[data-theme="dark"] svg [stroke="#B42318"]{stroke:#E5675C}
 html[data-theme="dark"] svg [fill="#1E7A4C"]{fill:#35A26A} html[data-theme="dark"] svg [stroke="#1E7A4C"]{stroke:#35A26A}
 html[data-theme="dark"] svg [fill="#C77700"]{fill:#E0A030} html[data-theme="dark"] svg [stroke="#C77700"]{stroke:#E0A030}
 html[data-theme="dark"] svg [stroke="#1B2430"]{stroke:var(--ink)}
@@ -38,6 +38,7 @@ html[data-theme="dark"] svg [stroke="#8A94A3"]{stroke:#7D8796} html[data-theme="
 html[data-theme="dark"] .legend b[style*="#1B2430"]{background:var(--ink)!important}
 html[data-theme="dark"] .legend b[style*="#2458C6"]{background:#5B8DEF!important}
 html[data-theme="dark"] .legend b[style*="#B42318"]{background:#E5675C!important}
+html[data-theme="dark"] .legend b[style*="#EAB308"]{background:#F2C230!important}
 html[data-theme="dark"] .legend b[style*="#1E7A4C"]{background:#35A26A!important}
 html,body,.card,.chip,nav#nav,.list,.chartbox,aside#v-entry,#modal .box,.keys button,input,select{transition:background-color .2s,color .2s,border-color .2s}
 *{box-sizing:border-box}
@@ -68,7 +69,7 @@ h1{font-size:22px;margin:0}
 .done{color:var(--sub)} .donebg{background:var(--chip)}
 .bar{height:10px;border-radius:5px;background:var(--line);display:flex;overflow:hidden}
 .bar i{display:block;height:100%}
-.bar .c{background:var(--blue)} .bar .k{background:var(--red)}
+.bar .c{background:var(--blue)} .bar .k{background:var(--cardC)}
 .grid2,.grid3{display:grid;gap:12px;grid-template-columns:minmax(0,1fr)}
 .grid2>*,.grid3>*{min-width:0}
 .card{min-width:0;max-width:100%}
@@ -87,7 +88,7 @@ nav#nav{order:3;flex-shrink:0;background:var(--card);border-top:1px solid var(--
 .li{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--chip)}
 .li:last-child{border-bottom:none}
 .flag{background:var(--overSoft)}
-.amt-c{color:var(--blue);font-weight:700} .amt-k{color:var(--red);font-weight:700}
+.amt-c{color:var(--blue);font-weight:700} .amt-k{color:var(--cardInk);font-weight:700}
 .tip{display:flex;gap:10px;align-items:flex-start;font-size:14px;line-height:1.5;margin-top:10px}
 .loading{color:var(--sub);text-align:center;padding:40px 0}
 #toast{position:fixed;left:16px;right:16px;top:calc(12px + env(safe-area-inset-top));background:var(--toast);color:var(--toastInk);border-radius:14px;padding:12px 16px;font-size:15px;display:none;z-index:20}
@@ -96,12 +97,12 @@ nav#nav{order:3;flex-shrink:0;background:var(--card);border-top:1px solid var(--
 input.f,select.f{height:44px;border-radius:12px;border:1px solid var(--line2);padding:0 12px;width:100%;background:var(--card)}
 /* 記帳 */
 .entry{--main:var(--blue);--soft:var(--blueSoft);--tint:var(--blueInk);--fillC:#C9D8F6;--pendC:#7FA2E8;--overC:#E58A80}
-.entry.card-mode{--main:var(--red);--soft:var(--redSoft);--tint:var(--redInk);--fillC:#F3CBC6;--pendC:#E08A80;--overC:#B42318}
+.entry.card-mode{--main:var(--cardC);--soft:#FEF6D8;--tint:#7A5300;--fillC:#FBE3A0;--pendC:#D9A406;--overC:#B42318;--onMain:var(--cardOn)}
 html[data-theme="dark"] .entry{--fillC:#2A4373;--pendC:#5B8DEF;--overC:#E5675C}
-html[data-theme="dark"] .entry.card-mode{--fillC:#5A2B27;--pendC:#E5675C;--overC:#F4ADA5}
+html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#5E4A12;--pendC:#F2C230;--overC:#F4ADA5}
 .seg{height:48px;border-radius:14px;border:1px solid var(--line2);background:var(--card);color:var(--sub);font-size:16px}
 .seg.cash.on{border:none;background:var(--blue);color:var(--onMain);font-weight:700}
-.seg.cardb.on{border:none;background:var(--red);color:var(--onMain);font-weight:700}
+.seg.cardb.on{border:none;background:var(--cardC);color:var(--cardOn);font-weight:700}
 .amount{position:relative;overflow:hidden;background:var(--soft);border:2px solid var(--main);border-radius:18px;padding:10px 18px;margin:10px 0}
 .amount>*{position:relative;z-index:1}
 .amount .fill,.amount .pend{position:absolute;top:0;bottom:0;left:0;z-index:0;transition:width .25s}
@@ -187,7 +188,7 @@ html[data-theme="dark"] .entry.card-mode{--fillC:#5A2B27;--pendC:#E5675C;--overC
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.10.31-0032';
+const APP_VERSION = '2026.10.31-0037';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -702,7 +703,7 @@ function chartDonut(d) {
   });
   const cash = cats.reduce(function (x, c) { return x + c.cash; }, 0), card = total - cash, ac = cash / total * Math.PI * 2;
   if (cash > 0) s += '<path d="' + arcPath(cx, cy, 45, 38, 0, Math.min(ac, Math.PI * 2 - 0.0001)) + '" fill="#2458C6"/>';
-  if (card > 0) s += '<path d="' + arcPath(cx, cy, 45, 38, ac, Math.PI * 2 - 0.0001) + '" fill="#B42318"/>';
+  if (card > 0) s += '<path d="' + arcPath(cx, cy, 45, 38, ac, Math.PI * 2 - 0.0001) + '" fill="#EAB308"/>';
   s += '<text x="' + cx + '" y="' + (cy - 3) + '" text-anchor="middle" font-size="11" fill="#5B6675">合計</text><text x="' + cx + '" y="' + (cy + 14) + '" text-anchor="middle" font-size="13" font-weight="700" fill="#1B2430">$' + fmt(total) + '</text>';
   const P = d.catsPrev || {}, L = d.catsLast || {}, gap = Math.min(34, 240 / cats.length);
   cats.forEach(function (c, i) {
@@ -712,7 +713,7 @@ function chartDonut(d) {
       '<text x="186" y="' + (y + 13) + '" font-size="10" fill="#5B6675">上月 <tspan fill="' + chgCol(c.total, P[c.name]) + '">' + (P[c.name] ? chgTxt(c.total, P[c.name]) : '—') + '</tspan>｜去年 <tspan fill="' + chgCol(c.total, L[c.name]) + '">' + (L[c.name] ? chgTxt(c.total, L[c.name]) : '—') + '</tspan></text>';
   });
   const pt = Object.keys(P).reduce(function (x, k) { return x + (k === '國旅' ? 0 : P[k]); }, 0), lt = Object.keys(L).reduce(function (x, k) { return x + (k === '國旅' ? 0 : L[k]); }, 0);
-  return { svg: s + '</svg>', cap: '<div class="legend"><span><b style="background:#2458C6;height:8px"></b>內圈藍：現金 $' + fmt(cash) + '</span><span><b style="background:#B42318;height:8px"></b>內圈紅：刷卡 $' + fmt(card) + '</span></div>' +
+  return { svg: s + '</svg>', cap: '<div class="legend"><span><b style="background:#2458C6;height:8px"></b>內圈藍：現金 $' + fmt(cash) + '</span><span><b style="background:#EAB308;height:8px"></b>內圈黃：刷卡 $' + fmt(card) + '</span></div>' +
     '<div class="sub" style="font-size:12px;margin-top:4px">全月比較：上月 $' + fmt(pt) + ' ' + chg(total, pt) + (lt ? '｜去年同月 $' + fmt(lt) + ' ' + chg(total, lt) : '') + '（▲紅＝花得比較多）</div>' };
 }
 function chartDaily(d) {
@@ -729,7 +730,7 @@ function chartDaily(d) {
   for (let i = 0; i < n; i++) {
     const x = X0 + i * bw + 1, hc = c[i] / ymax * (Y0 - Y1), hk = k[i] / ymax * (Y0 - Y1);
     if (hc) s += '<rect x="' + x.toFixed(1) + '" y="' + (Y0 - hc).toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + hc.toFixed(1) + '" fill="#2458C6"/>';
-    if (hk) s += '<rect x="' + x.toFixed(1) + '" y="' + (Y0 - hc - hk).toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + hk.toFixed(1) + '" fill="#B42318"/>';
+    if (hk) s += '<rect x="' + x.toFixed(1) + '" y="' + (Y0 - hc - hk).toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + hk.toFixed(1) + '" fill="#EAB308"/>';
   }
   const hline = function (v, col, dash) { if (!v) return ''; const y = Y0 - v / ymax * (Y0 - Y1); return '<line x1="' + X0 + '" y1="' + y + '" x2="' + X1 + '" y2="' + y + '" stroke="' + col + '" stroke-width="1.8" stroke-dasharray="' + dash + '"/>'; };
   s += hline(lavg, '#8A94A3', '2 3') + hline(pavg, '#D9822B', '6 3') + hline(avg, '#1B2430', '4 3');
@@ -738,7 +739,7 @@ function chartDaily(d) {
   return { svg: s, cap: '<div class="legend"><span><b style="height:0;border-top:2px dashed #1B2430"></b>本月平均 $' + fmt(avg) + '</span>' +
     (pavg ? '<span><b style="height:0;border-top:2px dashed #D9822B"></b>上月平均 $' + fmt(pavg) + ' ' + chg(avg, pavg) + '</span>' : '') +
     (lavg ? '<span><b style="height:0;border-top:2px dotted #8A94A3"></b>去年同期平均 $' + fmt(lavg) + ' ' + chg(avg, lavg) + '</span>' : '') + '</div>' +
-    '<div class="sub" style="font-size:12px;margin-top:4px">藍＝現金、紅＝刷卡。花最多的一天：' + (maxI + 1) + ' 日 $' + fmt(tot[maxI]) + '</div>' };
+    '<div class="sub" style="font-size:12px;margin-top:4px">藍＝現金、黃＝刷卡。花最多的一天：' + (maxI + 1) + ' 日 $' + fmt(tot[maxI]) + '</div>' };
 }
 function chartTrend(rows) {
   const vals = rows.map(function (r) { return r.spent; }), buds = rows.map(function (r) { return r.budget; }), lys = rows.map(function (r) { return r.ly || 0; });
@@ -748,7 +749,7 @@ function chartTrend(rows) {
   rows.forEach(function (r, i) {
     const x = X0 + i * bw + 3, w = bw - 6, hc = r.cash / ymax * (Y0 - Y1), hk = r.card / ymax * (Y0 - Y1);
     if (hc) s += '<rect x="' + x.toFixed(1) + '" y="' + (Y0 - hc).toFixed(1) + '" width="' + w.toFixed(1) + '" height="' + hc.toFixed(1) + '" fill="#2458C6"/>';
-    if (hk) s += '<rect x="' + x.toFixed(1) + '" y="' + (Y0 - hc - hk).toFixed(1) + '" width="' + w.toFixed(1) + '" height="' + hk.toFixed(1) + '" fill="#B42318"/>';
+    if (hk) s += '<rect x="' + x.toFixed(1) + '" y="' + (Y0 - hc - hk).toFixed(1) + '" width="' + w.toFixed(1) + '" height="' + hk.toFixed(1) + '" fill="#EAB308"/>';
     if (r.budget) { const yb = Y0 - r.budget / ymax * (Y0 - Y1); s += '<line x1="' + (x - 2).toFixed(1) + '" y1="' + yb + '" x2="' + (x + w + 2).toFixed(1) + '" y2="' + yb + '" stroke="#1B2430" stroke-width="2.5"/>'; }
     s += '<text x="' + (x + w / 2).toFixed(1) + '" y="246" font-size="10" text-anchor="middle" fill="' + (i === rows.length - 1 ? '#1B2430' : '#5B6675') + '">' + r.m + '月</text>';
   });
@@ -759,7 +760,7 @@ function chartTrend(rows) {
   const over = rows.filter(function (r) { return r.budget && r.spent > r.budget; }).length;
   const both = rows.filter(function (r) { return r.ly && r.spent; });
   const sumC = both.reduce(function (a, r) { return a + r.spent; }, 0), sumL = both.reduce(function (a, r) { return a + r.ly; }, 0);
-  return { svg: s + '</svg>', cap: '<div class="legend"><span><b style="background:#2458C6;height:8px"></b>現金</span><span><b style="background:#B42318;height:8px"></b>刷卡</span><span><b style="background:var(--ink)"></b>當月預算</span><span><b style="height:0;border-top:2px dashed #8A94A3"></b>去年同月</span></div>' +
+  return { svg: s + '</svg>', cap: '<div class="legend"><span><b style="background:#2458C6;height:8px"></b>現金</span><span><b style="background:#EAB308;height:8px"></b>刷卡</span><span><b style="background:var(--ink)"></b>當月預算</span><span><b style="height:0;border-top:2px dashed #8A94A3"></b>去年同月</span></div>' +
     '<div class="sub" style="font-size:12px;margin-top:4px">近 12 個月有 ' + over + ' 個月超過預算。' + (both.length ? '有去年資料的 ' + both.length + ' 個月，合計比去年 ' + chg(sumC, sumL) + '。' : '') + '</div>' };
 }
 function chartWeek(d) {
@@ -936,7 +937,7 @@ function cTrend(x) {
   rows.forEach(function (r, i) {
     const xx = X0 + i * bw + 3, w = bw - 6, hc = r.cash / ymax * (Y0 - Y1), hk = r.card / ymax * (Y0 - Y1);
     if (hc) s += '<rect x="' + xx.toFixed(1) + '" y="' + (Y0 - hc).toFixed(1) + '" width="' + w.toFixed(1) + '" height="' + hc.toFixed(1) + '" fill="#2458C6"/>';
-    if (hk) s += '<rect x="' + xx.toFixed(1) + '" y="' + (Y0 - hc - hk).toFixed(1) + '" width="' + w.toFixed(1) + '" height="' + hk.toFixed(1) + '" fill="#B42318"/>';
+    if (hk) s += '<rect x="' + xx.toFixed(1) + '" y="' + (Y0 - hc - hk).toFixed(1) + '" width="' + w.toFixed(1) + '" height="' + hk.toFixed(1) + '" fill="#EAB308"/>';
     if (r.budget) { const yb = Y0 - r.budget / ymax * (Y0 - Y1); s += '<line x1="' + (xx - 2).toFixed(1) + '" y1="' + yb + '" x2="' + (xx + w + 2).toFixed(1) + '" y2="' + yb + '" stroke="#1B2430" stroke-width="2.5"/>'; }
     if (r.ly) { const yl = Y0 - r.ly / ymax * (Y0 - Y1); s += '<circle cx="' + (xx + w / 2).toFixed(1) + '" cy="' + yl.toFixed(1) + '" r="3.5" fill="#fff" stroke="#8A94A3" stroke-width="2"/>'; }
     s += '<text x="' + (xx + w / 2).toFixed(1) + '" y="246" font-size="10" text-anchor="middle" fill="' + (i === 11 ? '#1B2430' : '#5B6675') + '">' + r.m + '月</text>';
@@ -944,7 +945,7 @@ function cTrend(x) {
   const withB = rows.filter(function (r) { return r.budget && !r.none; }), over = withB.filter(function (r) { return r.total > r.budget; }).length;
   const avg = rows.filter(function (r) { return !r.none && r.total; });
   const mean = avg.length ? avg.reduce(function (a, r) { return a + r.total; }, 0) / avg.length : 0;
-  return { svg: s + '</svg>', cap: '<div class="legend"><span><b style="background:#2458C6;height:8px"></b>現金</span><span><b style="background:#B42318;height:8px"></b>刷卡</span><span><b style="background:var(--ink)"></b>預算</span><span><b style="height:0;border-top:2px solid #8A94A3;border-radius:4px;width:8px"></b>去年同月</span></div>' +
+  return { svg: s + '</svg>', cap: '<div class="legend"><span><b style="background:#2458C6;height:8px"></b>現金</span><span><b style="background:#EAB308;height:8px"></b>刷卡</span><span><b style="background:var(--ink)"></b>預算</span><span><b style="height:0;border-top:2px solid #8A94A3;border-radius:4px;width:8px"></b>去年同月</span></div>' +
     '<div class="sub" style="font-size:12px;margin-top:4px">月平均 $' + fmt(mean) + '；有預算的 ' + withB.length + ' 個月中 ' + over + ' 個月超支。</div>' };
 }
 function cSize(x) {
