@@ -202,7 +202,7 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.04-0202';
+const APP_VERSION = '2026.11.04-0233';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -1587,8 +1587,16 @@ function renderBill(b) {
       }).catch(err);
       return;
     }
+    if (k === 'fix') return doFix(x.dataset.k, +x.dataset.i, +(x.dataset.j || 0));
+    if (k === 'fxcat') {
+      const fx = S.fixAdd, date = $('fxDate').value, item = $('fxItem').value.trim() || '對帳補記';
+      x.disabled = true;
+      return call('add', { date: date, cat: x.dataset.v, item: item, amount: fx.line.amount, pay: '信用卡', note: histNote(date) })
+        .then(function () { toast('已補記 ' + md(date) + '「' + item + '」$' + fmt(fx.line.amount) + '（刷卡）', 2600); clearCaches(); afterWrite(); rematch(); }).catch(err);
+    }
     if (k === 'match') {
       const t = $('billText').value; if (!t.trim()) return toast('請先貼上帳單明細');
+      S.billText = t;
       x.disabled = true; x.textContent = '比對中…';
       call('matchBill', { y: b.y, m: b.m, text: t }).then(function (r) { S.billMatch = r; x.disabled = false; x.textContent = '逐筆比對'; renderMatch(r); $('billRows').innerHTML = billRowsHTML(b.rows, r); })
         .catch(function (e) { x.disabled = false; x.textContent = '逐筆比對'; err(e); });
@@ -1600,12 +1608,78 @@ function renderBill(b) {
     }
   };
 }
+// ---------- 對帳一鍵修正 ----------
+function histNote(dateStr) { return dateStr < '2026-11-01' ? '帳單補登（舊制，錢已由卡費頁扣過）' : '對帳補記'; }
+function removeTerm(note, x) {
+  const n = String(note || '');
+  const m = n.match(/[\(（〔]([^\)）〕]*)[\)）〕]/);
+  if (m) {
+    const parts = m[1].split('+'), i = parts.map(function (p) { return Math.round(Number(p.replace(/[^\d.\-]/g, ''))); }).indexOf(x);
+    if (i >= 0) { parts.splice(i, 1); return n.replace(m[0], parts.length ? m[0].charAt(0) + parts.join('+') + m[0].charAt(m[0].length - 1) : ''); }
+  }
+  return n;
+}
+function lineDate(line, r) {   // 帳單上的「月/日」→ 完整日期（取帳單期間附近的年份）
+  if (!line.date) return r.to;
+  const p = line.date.split('/'), mo = +p[0], d = +p[1];
+  const fy = +r.from.slice(0, 4), ty = +r.to.slice(0, 4);
+  const y = mo === +r.from.slice(5, 7) ? fy : (mo === +r.to.slice(5, 7) ? ty : ty);
+  return y + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+}
+function recArgs(f, over) {
+  return Object.assign({ y: +f.date.slice(0, 4), m: +f.date.slice(5, 7), row: f.row, date: f.date, cat: f.cat, item: f.item, amount: f.amount, pay: f.pay, note: f.note || '' }, over || {});
+}
+function rematch() {
+  const r = S.billMatch; if (!r || !S.billText) return;
+  call('matchBill', { y: r.y, m: r.m, text: S.billText, nosave: true }).then(function (nr) {
+    S.billMatch = nr; renderMatch(nr);
+    call('bill', { y: r.y, m: r.m }).then(function (b) { S.billRowsData = b.rows; const el = $('billRows'); if (el) el.innerHTML = billRowsHTML(b.rows, nr); });
+  }).catch(err);
+}
+function doFix(kind, i, j) {
+  const r = S.billMatch; if (!r) return;
+  const done = function (msg) { toast(msg, 2600); clearCaches(); afterWrite(); rematch(); };
+  if (kind === 'move' || kind === 'tocard') {
+    const x = r.billOnly[i], f = x.found[j], amt = x.line.amount;
+    if (kind === 'tocard') {
+      return call('update', recArgs(f, { pay: '信用卡', note: (f.note ? f.note + ' ' : '') + (f.date < '2026-11-01' ? '（對帳改為刷卡，帳單補登）' : '（對帳改為刷卡）') }))
+        .then(function () { done('已把 ' + md(f.date) + '「' + f.item + '」$' + fmt(amt) + ' 改成刷卡'); }).catch(err);
+    }
+    if (f.amount - amt < 0) return toast('這筆金額比帳單小，無法移出');
+    const newNote = removeTerm(f.note, amt);
+    call('update', recArgs(f, { amount: f.amount - amt, note: newNote + (newNote === f.note ? '（已移出 ' + amt + ' 改記刷卡）' : '') })).then(function () {
+      return call('add', { date: f.date, cat: f.cat, item: x.line.desc || f.item, amount: amt, pay: '信用卡', note: histNote(f.date) });
+    }).then(function () { done('已從 ' + md(f.date) + '「' + f.cat + '」移出 $' + fmt(amt) + '，改記成刷卡'); }).catch(err);
+    return;
+  }
+  if (kind === 'add') {
+    const x = r.billOnly[i], date = lineDate(x.line, r);
+    const cats = ['食物', '油料', '娛樂', '其他', '教育', '奉獻', '國旅'];
+    $('fixPanel').innerHTML = '<div class="card" style="margin:8px 0 0;border:2px solid var(--cardC)"><b style="font-size:14px">補記這筆刷卡：$' + fmt(x.line.amount) + '</b>' +
+      '<label class="sub" style="display:block;margin-top:8px">日期<input class="f" type="date" id="fxDate" value="' + date + '"></label>' +
+      '<label class="sub" style="display:block;margin-top:8px">項目<input class="f" id="fxItem" value="' + esc(x.line.desc || '') + '" placeholder="店名或項目"></label>' +
+      '<div class="sub" style="margin-top:8px">科目</div><div class="cats" style="margin-top:6px">' + cats.map(function (c) { return '<button class="chip" data-b="fxcat" data-v="' + c + '">' + c + '</button>'; }).join('') + '</div></div>';
+    S.fixAdd = x; return;
+  }
+  if (kind === 'cash' || kind === 'del' || kind === 'amt') {
+    const rec = r.appOnly[i];
+    if (kind === 'cash') return call('update', recArgs(rec, { pay: '現金' })).then(function () { done('已把 ' + md(rec.date) + '「' + rec.item + '」改成現金'); }).catch(err);
+    if (kind === 'del') { if (!confirm('刪除 ' + md(rec.date) + '「' + rec.item + '」$' + fmt(rec.amount) + '？')) return; return call('delete', recArgs(rec)).then(function () { done('已刪除這筆紀錄'); }).catch(err); }
+    const near = r.billOnly.map(function (x) { return x.line; }).filter(function (L) { return L.date && Math.abs(new Date(lineDate(L, r)) - new Date(rec.date)) <= 3 * 86400000; });
+    const v = prompt('把 ' + md(rec.date) + '「' + rec.item + '」的金額改成：', near.length ? near[0].amount : rec.amount);
+    if (v === null) return;
+    const nv = Math.round(evalExpr(v)); if (isNaN(nv) || nv <= 0) return toast('金額不正確');
+    return call('update', recArgs(rec, { amount: nv, note: (rec.note ? rec.note + ' ' : '') + '（對帳更正，原 ' + rec.amount + '）' })).then(function () { done('已改成 $' + fmt(nv)); }).catch(err);
+  }
+}
+
 function billRowsHTML(rows, mr) {
   if (!rows.length) return '<div class="li sub">這期沒有刷卡紀錄</div>';
   const only = mr ? mr.appOnly.map(function (x) { return x.row + '|' + x.date; }) : [];
   return rows.map(function (r) {
-    const miss = mr && only.indexOf(r.row + '|' + r.date) >= 0, ok = mr && !miss;
-    return '<div class="li" style="padding:8px 12px;' + (miss ? 'background:var(--amberSoft)' : '') + '"><div class="col" style="flex:1;gap:1px"><span style="font-size:14px">' + (ok ? '<span class="ok">✓ </span>' : '') + esc(r.item) + '</span><span class="sub" style="font-size:11px">' + md(r.date) + '・' + esc(r.cat) + (miss ? '｜<b class="fast">帳單上沒有這筆</b>' : '') + '</span></div><span class="amt-k">$' + fmt(r.amount) + '</span></div>';
+    const k = only.indexOf(r.row + '|' + r.date), miss = mr && k >= 0, ok = mr && !miss;
+    return '<div class="li" style="padding:8px 12px;flex-wrap:wrap;' + (miss ? 'background:var(--amberSoft)' : '') + '"><div class="col" style="flex:1;gap:1px;min-width:0"><span style="font-size:14px">' + (ok ? '<span class="ok">✓ </span>' : '') + esc(r.item) + '</span><span class="sub" style="font-size:11px">' + md(r.date) + '・' + esc(r.cat) + (miss ? '｜<b class="fast">帳單上沒有這筆</b>' : '') + '</span></div><span class="amt-k">$' + fmt(r.amount) + '</span>' +
+      (miss ? '<div style="display:flex;gap:6px;width:100%;margin-top:6px"><button class="chip" data-b="fix" data-k="cash" data-i="' + k + '" style="height:32px;font-size:12px">改成現金</button><button class="chip" data-b="fix" data-k="amt" data-i="' + k + '" style="height:32px;font-size:12px">改金額</button><button class="chip" data-b="fix" data-k="del" data-i="' + k + '" style="height:32px;font-size:12px;color:var(--red)">刪除</button></div>' : '') + '</div>';
   }).join('');
 }
 function renderMatch(r) {
@@ -1613,16 +1687,20 @@ function renderMatch(r) {
   let h = '<div class="row" style="margin:10px 0 6px;font-size:13px"><span>帳單 ' + r.lines + ' 筆，合計 <b>$' + fmt(r.billTotal) + '</b></span><span>對上 <b class="ok">' + r.matched.length + '</b> 筆</span></div>';
   if (r.billOnly.length) {
     h += '<div style="font-size:13px;font-weight:700;color:var(--red);margin:8px 0 4px">帳單有、App 沒有刷卡紀錄（' + r.billOnly.length + ' 筆）</div>' + r.billOnly.map(function (x) {
-      const where = x.found.length ? x.found.map(function (f) {
-        return '出現在 <b>' + md(f.date) + '（' + esc(f.cat) + '）</b>' + (f.kind === 'term' ? '的算式 ' + esc(f.note || f.item) : '「' + esc(f.item) + '」') + '，記成' + esc(f.pay) + (f.inPeriod ? '' : '（帳單期間外）');
+      const i = r.billOnly.indexOf(x);
+      const where = x.found.length ? x.found.map(function (f, j) {
+        const btn = f.kind === 'term' && f.amount > x.line.amount ? '<button class="chip" data-b="fix" data-k="move" data-i="' + i + '" data-j="' + j + '" style="height:32px;font-size:12px;margin-top:4px">從算式移出、改記刷卡</button>' :
+          (f.kind === 'exact' && f.pay === '現金' ? '<button class="chip" data-b="fix" data-k="tocard" data-i="' + i + '" data-j="' + j + '" style="height:32px;font-size:12px;margin-top:4px">改成刷卡</button>' : '');
+        return '出現在 <b>' + md(f.date) + '（' + esc(f.cat) + '）</b>' + (f.kind === 'term' ? '的算式 ' + esc(f.note || f.item) : '「' + esc(f.item) + '」') + '，記成' + esc(f.pay) + (f.inPeriod ? '' : '（帳單期間外）') + (btn ? '<br>' + btn : '');
       }).join('<br>') : '所有科目和算式裡都找不到，<b>很可能漏記</b>';
-      return '<div style="padding:8px 10px;margin-bottom:6px;border-radius:10px;background:var(--overSoft)"><div class="row" style="font-size:14px"><span>' + (x.line.date ? x.line.date + ' ' : '') + esc(x.line.desc || '（未註明）') + '</span><b style="color:var(--red)">$' + fmt(x.line.amount) + '</b></div><div style="font-size:12px;line-height:1.6;color:var(--redInk)">' + where + '</div></div>';
+      const addBtn = '<button class="chip" data-b="fix" data-k="add" data-i="' + i + '" style="height:32px;font-size:12px;margin-top:6px">補記這筆（刷卡）</button>';
+      return '<div style="padding:8px 10px;margin-bottom:6px;border-radius:10px;background:var(--overSoft)"><div class="row" style="font-size:14px"><span>' + (x.line.date ? x.line.date + ' ' : '') + esc(x.line.desc || '（未註明）') + '</span><b style="color:var(--red)">$' + fmt(x.line.amount) + '</b></div><div style="font-size:12px;line-height:1.6;color:var(--redInk)">' + where + '<br>' + addBtn + '</div></div>';
     }).join('');
   }
   if (r.appOnly.length) h += '<div style="font-size:13px;font-weight:700;color:var(--amberInk);margin:8px 0 4px">App 有、帳單沒有（' + r.appOnly.length + ' 筆，已在下方清單用黃底標出）</div><div class="sub" style="font-size:12px;line-height:1.5">可能是：記錯支付方式（其實付現）、重複記帳、金額記錯，或要到下一期才入帳。</div>';
   if (r.refunds.length) h += '<div class="sub" style="font-size:12px;margin-top:6px">帳單上的退款／回饋：' + r.refunds.map(function (x) { return (x.desc || '') + ' ' + money(x.amount); }).join('、') + '</div>';
   if (!r.billOnly.length && !r.appOnly.length) h += '<div class="ok" style="font-weight:700;margin-top:6px">每一筆都對上了 ✓</div>';
-  box.innerHTML = h;
+  box.innerHTML = h + '<div id="fixPanel"></div>';
 }
 // ---------- 財務目標・報稅資料 ----------
 function renderGoalsTax(y, m) {
