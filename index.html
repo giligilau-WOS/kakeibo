@@ -202,7 +202,7 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.04-0245';
+const APP_VERSION = '2026.11.04-0308';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -1621,6 +1621,7 @@ function removeTerm(note, x) {
   return n;
 }
 function lineDate(line, r) {   // 帳單上的「月/日」→ 完整日期（取帳單期間附近的年份）
+  if (line.iso) return line.iso;
   if (!line.date) return r.to;
   const p = line.date.split('/'), mo = +p[0], d = +p[1];
   const fy = +r.from.slice(0, 4), ty = +r.to.slice(0, 4);
@@ -1703,9 +1704,15 @@ function renderMatch(r) {
       return '<div style="padding:8px 10px;margin-bottom:6px;border-radius:10px;background:var(--overSoft)"><div class="row" style="font-size:14px"><span>' + (x.line.date ? x.line.date + ' ' : '') + esc(x.line.desc || '（未註明）') + '</span><b style="color:var(--red)">$' + fmt(x.line.amount) + '</b></div><div style="font-size:12px;line-height:1.6;color:var(--redInk)">' + where + '<br>' + addBtn + '</div></div>';
     }).join('');
   }
-  if (r.appOnly.length) h += '<div style="font-size:13px;font-weight:700;color:var(--amberInk);margin:8px 0 4px">App 有、帳單沒有（' + r.appOnly.length + ' 筆，已在下方清單用黃底標出）</div><div class="sub" style="font-size:12px;line-height:1.5">可能是：記錯支付方式（其實付現）、重複記帳、金額記錯，或要到下一期才入帳。</div>';
+  const dups = r.appOnly.map(function (x, k) { return { x: x, k: k }; }).filter(function (o) { return o.x.dup; });
+  const inPer = r.appOnly.length - dups.length;
+  if (dups.length) h += '<div style="font-size:13px;font-weight:700;color:var(--amberInk);margin:8px 0 4px">可能重複補記（' + dups.length + ' 筆）</div><div class="sub" style="font-size:12px;line-height:1.5;margin-bottom:6px">這些和帳單上已對上的那筆同金額、同店名、同期數、日期相近，多半是重複新增的，確認後刪除即可。</div>' +
+    dups.map(function (o) { return '<div style="padding:8px 10px;margin-bottom:6px;border-radius:10px;background:var(--amberSoft)"><div class="row" style="font-size:14px"><span>' + md(o.x.date) + '・' + esc(o.x.cat) + '・' + esc(o.x.item) + '</span><b class="amt-k">$' + fmt(o.x.amount) + '</b></div><button class="chip" data-b="fix" data-k="del" data-i="' + o.k + '" style="height:32px;font-size:12px;margin-top:6px;color:var(--red)">刪除這筆重複</button></div>'; }).join('');
+  if (inPer) h += '<div style="font-size:13px;font-weight:700;color:var(--amberInk);margin:8px 0 4px">App 有、帳單沒有（' + inPer + ' 筆，已在下方清單用黃底標出）</div><div class="sub" style="font-size:12px;line-height:1.5">可能是：記錯支付方式（其實付現）、重複記帳、金額記錯，或要到下一期才入帳。</div>';
+  if (r.cancelled && r.cancelled.length) h += '<div class="sub" style="font-size:12px;margin-top:6px">刷退抵銷：' + r.cancelled.map(function (c) { return esc(c.charge.desc) + ' $' + fmt(c.charge.amount) + ' 與刷退 ' + money(c.refund.amount); }).join('、') + '（互相抵掉，不用處理）</div>';
   if (r.refunds.length) h += '<div class="sub" style="font-size:12px;margin-top:6px">帳單上的退款／回饋：' + r.refunds.map(function (x) { return (x.desc || '') + ' ' + money(x.amount); }).join('、') + '</div>';
   if (!r.billOnly.length && !r.appOnly.length) h += '<div class="ok" style="font-weight:700;margin-top:6px">每一筆都對上了 ✓</div>';
+  if (r.billInput != null && r.billInput === r.billTotal && !r.billOnly.length && !r.appOnly.length) h += '<div class="sub" style="font-size:12px">明細合計和本期應繳金額 $' + fmt(r.billInput) + ' 完全一致。</div>';
   box.innerHTML = h + '<div id="fixPanel"></div>';
 }
 // ---------- 財務目標・報稅資料 ----------
