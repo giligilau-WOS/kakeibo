@@ -202,7 +202,7 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.04-0140';
+const APP_VERSION = '2026.11.04-0202';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -1561,10 +1561,13 @@ function renderBill(b) {
     '<div class="row" style="margin-top:8px"><span>帳單金額</span><input class="f" id="billAmt" inputmode="numeric" style="width:140px;text-align:right" value="' + (b.bill == null ? '' : b.bill) + '" placeholder="輸入帳單金額"></div>' +
     (diffTxt ? '<div style="margin-top:8px;font-size:14px">' + diffTxt + '</div>' : '') + '</div>' +
     '<button class="submit" data-b="save" style="margin:0">儲存帳單金額並比對</button>' +
+    '<div class="card" style="background:var(--bg);margin:0"><b style="font-size:14px">逐筆比對帳單明細</b><div class="sub" style="font-size:12px;line-height:1.5;margin:4px 0 8px">從銀行 App 或電子帳單複製明細貼上，或一行打一筆金額（可含日期、店名）。</div>' +
+    '<textarea class="f" id="billText" rows="5" style="height:auto;padding:10px 12px;line-height:1.5;font-size:16px" placeholder="例如：\n09/24 小北百貨 799\n10/04 全聯 164">' + esc((b.detail || []).map(function (L) { return (L.date ? L.date + ' ' : '') + (L.desc ? L.desc + ' ' : '') + L.amount; }).join('\n')) + '</textarea>' +
+    '<button class="submit" data-b="match" style="margin:8px 0 0">逐筆比對</button><div id="matchRes"></div></div>' +
     '<div class="card" style="background:var(--bg);margin:0"><b style="font-size:14px">找差異</b><div class="sub" style="font-size:12px;line-height:1.5;margin:4px 0 8px">輸入帳單上對不到的那筆金額（或差額），會在期間前後 3 天的所有紀錄裡找：金額相同、或藏在某天某科目算式裡的。</div>' +
     '<div class="row"><input class="f" id="findAmt" inputmode="numeric" placeholder="例如 799" value="' + (b.diff ? Math.abs(b.diff) : '') + '"><button class="chip" data-b="find" style="height:44px;flex-shrink:0">搜尋</button></div><div id="findRes"></div></div>' +
     '<div class="sub" style="font-size:12px">這期記錄的刷卡（' + b.rows.length + ' 筆）：</div>' +
-    '<div class="list" style="margin:0;max-height:38vh;overflow:auto">' + (b.rows.length ? b.rows.map(function (r) { return '<div class="li" style="padding:8px 12px"><div class="col" style="flex:1;gap:1px"><span style="font-size:14px">' + esc(r.item) + '</span><span class="sub" style="font-size:11px">' + md(r.date) + '・' + esc(r.cat) + '</span></div><span class="amt-k">$' + fmt(r.amount) + '</span></div>'; }).join('') : '<div class="li sub">這期沒有刷卡紀錄</div>') + '</div>' +
+    '<div class="list" style="margin:0;max-height:38vh;overflow:auto" id="billRows">' + billRowsHTML(b.rows, S.billMatch && S.billMatch.y === b.y && S.billMatch.m === b.m ? S.billMatch : null) + '</div>' +
     '<button class="chip" data-b="close" style="align-self:center">關閉</button>';
   $('modalBox').onclick = function (e) {
     const x = e.target.closest('[data-b]'); if (!x) return;
@@ -1584,11 +1587,42 @@ function renderBill(b) {
       }).catch(err);
       return;
     }
+    if (k === 'match') {
+      const t = $('billText').value; if (!t.trim()) return toast('請先貼上帳單明細');
+      x.disabled = true; x.textContent = '比對中…';
+      call('matchBill', { y: b.y, m: b.m, text: t }).then(function (r) { S.billMatch = r; x.disabled = false; x.textContent = '逐筆比對'; renderMatch(r); $('billRows').innerHTML = billRowsHTML(b.rows, r); })
+        .catch(function (e) { x.disabled = false; x.textContent = '逐筆比對'; err(e); });
+      return;
+    }
     if (k === 'save') {
       const v = evalExpr($('billAmt').value); if (isNaN(v) || v <= 0) return toast('請輸入帳單金額');
       x.disabled = true; call('setBill', { y: b.y, m: b.m, amount: Math.round(v) }).then(renderBill).catch(err);
     }
   };
+}
+function billRowsHTML(rows, mr) {
+  if (!rows.length) return '<div class="li sub">這期沒有刷卡紀錄</div>';
+  const only = mr ? mr.appOnly.map(function (x) { return x.row + '|' + x.date; }) : [];
+  return rows.map(function (r) {
+    const miss = mr && only.indexOf(r.row + '|' + r.date) >= 0, ok = mr && !miss;
+    return '<div class="li" style="padding:8px 12px;' + (miss ? 'background:var(--amberSoft)' : '') + '"><div class="col" style="flex:1;gap:1px"><span style="font-size:14px">' + (ok ? '<span class="ok">✓ </span>' : '') + esc(r.item) + '</span><span class="sub" style="font-size:11px">' + md(r.date) + '・' + esc(r.cat) + (miss ? '｜<b class="fast">帳單上沒有這筆</b>' : '') + '</span></div><span class="amt-k">$' + fmt(r.amount) + '</span></div>';
+  }).join('');
+}
+function renderMatch(r) {
+  const box = $('matchRes'); if (!box) return;
+  let h = '<div class="row" style="margin:10px 0 6px;font-size:13px"><span>帳單 ' + r.lines + ' 筆，合計 <b>$' + fmt(r.billTotal) + '</b></span><span>對上 <b class="ok">' + r.matched.length + '</b> 筆</span></div>';
+  if (r.billOnly.length) {
+    h += '<div style="font-size:13px;font-weight:700;color:var(--red);margin:8px 0 4px">帳單有、App 沒有刷卡紀錄（' + r.billOnly.length + ' 筆）</div>' + r.billOnly.map(function (x) {
+      const where = x.found.length ? x.found.map(function (f) {
+        return '出現在 <b>' + md(f.date) + '（' + esc(f.cat) + '）</b>' + (f.kind === 'term' ? '的算式 ' + esc(f.note || f.item) : '「' + esc(f.item) + '」') + '，記成' + esc(f.pay) + (f.inPeriod ? '' : '（帳單期間外）');
+      }).join('<br>') : '所有科目和算式裡都找不到，<b>很可能漏記</b>';
+      return '<div style="padding:8px 10px;margin-bottom:6px;border-radius:10px;background:var(--overSoft)"><div class="row" style="font-size:14px"><span>' + (x.line.date ? x.line.date + ' ' : '') + esc(x.line.desc || '（未註明）') + '</span><b style="color:var(--red)">$' + fmt(x.line.amount) + '</b></div><div style="font-size:12px;line-height:1.6;color:var(--redInk)">' + where + '</div></div>';
+    }).join('');
+  }
+  if (r.appOnly.length) h += '<div style="font-size:13px;font-weight:700;color:var(--amberInk);margin:8px 0 4px">App 有、帳單沒有（' + r.appOnly.length + ' 筆，已在下方清單用黃底標出）</div><div class="sub" style="font-size:12px;line-height:1.5">可能是：記錯支付方式（其實付現）、重複記帳、金額記錯，或要到下一期才入帳。</div>';
+  if (r.refunds.length) h += '<div class="sub" style="font-size:12px;margin-top:6px">帳單上的退款／回饋：' + r.refunds.map(function (x) { return (x.desc || '') + ' ' + money(x.amount); }).join('、') + '</div>';
+  if (!r.billOnly.length && !r.appOnly.length) h += '<div class="ok" style="font-weight:700;margin-top:6px">每一筆都對上了 ✓</div>';
+  box.innerHTML = h;
 }
 // ---------- 財務目標・報稅資料 ----------
 function renderGoalsTax(y, m) {
