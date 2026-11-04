@@ -195,6 +195,7 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
     <section class="view" id="v-cat"></section>
     <section class="view" id="v-records"></section>
     <section class="view" id="v-assets"></section>
+    <section class="view" id="v-plan"></section>
   </main>
   <aside class="view entry" id="v-entry"></aside>
 </div>
@@ -202,7 +203,7 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.04-0308';
+const APP_VERSION = '2026.11.04-0345';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -413,7 +414,7 @@ function show(view) {
   document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('active'); });
   const target = view === 'cat' ? 'v-cat' : 'v-' + view;
   $(target).classList.add('active');
-  document.querySelectorAll('.navbtn').forEach(function (b) { b.classList.toggle('on', b.dataset.view === (view === 'cat' ? 'charts' : view)); });
+  document.querySelectorAll('.navbtn').forEach(function (b) { b.classList.toggle('on', b.dataset.view === (view === 'cat' ? 'charts' : (view === 'plan' ? 'assets' : view))); });
   document.getElementById('app').classList.toggle('entry-mode', view === 'entry');
   resetScroll();
   if (view === 'today') loadToday();
@@ -695,6 +696,12 @@ function renderToday() {
     h += '<div class="card"><div class="row"><b style="font-size:15px">可投資金額</b><span class="tag ok okbg">緊急備用金已補滿</span></div><div class="big ok">$' + fmt(iv.amount) + '</div><span class="sub">' + esc(iv.text) + '</span></div>';
   }
   h += '</div>';
+  if (d.closeInfo) {
+    const ci = d.closeInfo;
+    h += '<div class="card ' + (ci.done ? 'okbg' : '') + '"><div class="row"><b style="font-size:15px">' + ci.m + ' 月月底結帳</b><span class="tag ' + (ci.done ? 'ok okbg' : 'fast fastbg') + '">' + (ci.done ? '已完成 ✓' : ci.ok + ' / ' + ci.total + ' 項') + '</span></div>' +
+      '<div class="bar" style="margin:8px 0"><i style="width:' + Math.round(ci.ok / ci.total * 100) + '%;background:var(--green)"></i></div>' +
+      '<button class="chip" data-act="close" data-y="' + ci.y + '" data-m="' + ci.m + '" style="height:36px">' + (ci.done ? '查看結帳清單' : '打開結帳清單') + '</button></div>';
+  }
   if (d.prepaid && d.prepaid.due.length) {
     const pp = d.prepaid, paidN = pp.due.filter(function (x) { return x.paid; }).length;
     h += '<div class="card"><div class="row"><b style="font-size:15px">本月應繳（預扣帳戶）</b><span class="tag ' + (pp.overdue ? 'over overbg' : (pp.unpaid ? 'fast fastbg' : 'ok okbg')) + '">' + (pp.overdue ? pp.overdue + ' 項逾期' : (pp.unpaid ? '還有 ' + pp.unpaid + ' 項未繳' : '全部繳清')) + '</span></div>' +
@@ -714,6 +721,7 @@ function renderToday() {
 }
 $('v-today').addEventListener('click', function (e) {
   if (e.target.closest('[data-act="cfg"]')) return openSetup();
+  const cl = e.target.closest('[data-act="close"]'); if (cl) return openClose(+cl.dataset.y, +cl.dataset.m);
   const pn = e.target.closest('[data-act="paynow"]');
   if (pn) { S.e.pay = '預扣'; S.e.ppKey = pn.dataset.key; S.e.amt = ''; S.e.ppTouched = false; S.e.date = S.form.today; show('entry'); renderEntry(); return; }
   const rf = e.target.closest('[data-act="refresh"]');
@@ -1215,7 +1223,8 @@ function renderRecords() {
     return true;
   });
   let h = monthHeader(d, 'rc', '共 ' + d.rows.length + ' 筆｜$' + fmt(d.total)) +
-    '<button class="chip" data-act="bill" style="width:100%;height:42px;margin-bottom:10px;border:1px solid var(--cardC);color:var(--cardInk);font-weight:700">信用卡帳單對帳</button>';
+    '<div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-bottom:10px"><button class="chip" data-act="bill" style="width:100%;height:42px;border:1px solid var(--cardC);color:var(--cardInk);font-weight:700">信用卡帳單對帳</button>' +
+    '<button class="chip" data-act="invoice" style="width:100%;height:42px;border:1px solid var(--blue);color:var(--blue);font-weight:700">電子發票比對</button></div>';
   h += '<input class="f" id="recSearch" type="search" placeholder="搜尋項目或備註" value="' + esc(q) + '" style="border-radius:22px;margin-bottom:10px">';
   h += '<div class="items" style="margin-bottom:12px">' + ['全部', '奉獻', '食物', '教育', '油料', '娛樂', '其他', '國旅', '只看信用卡'].map(function (c) { return '<button class="chip ' + (fl === c ? 'on' : '') + '" data-act="filter" data-v="' + c + '" style="height:36px">' + c + '</button>'; }).join('') + '</div>';
   const groups = {};
@@ -1239,6 +1248,7 @@ $('v-records').addEventListener('click', function (e) {
   if (a === 'rc-next') { S.recYM = ymAdd(S.recYM, 1); loadRecords(); }
   if (a === 'filter') { S.recFilter = b.dataset.v; renderRecords(); }
   if (a === 'bill') openBill();
+  if (a === 'invoice') openInvoices();
   if (a === 'edit') openEdit(S.rec.rows.filter(function (r) { return r.row === +b.dataset.row; })[0]);
 });
 function openEdit(r) {
@@ -1447,7 +1457,9 @@ function renderAssetPane() {
 
 function renderAssets() {
   const d = S.asset, c = assetCalc(), el = $('v-assets');
-  let h = monthHeader(d, 'as', '滿月記帳｜月底盤點');
+  let h = monthHeader(d, 'as', '滿月記帳｜月底盤點') +
+    '<div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-bottom:12px"><button class="chip" data-act="closewiz" style="width:100%;height:42px;border:1px solid var(--green);color:var(--green);font-weight:700">' + d.m + ' 月月底結帳</button>' +
+    '<button class="chip" data-act="plan" style="width:100%;height:42px;border:1px solid var(--blue);color:var(--blue);font-weight:700">明年預算試算</button></div>';
   h += '<div class="grid2" style="align-items:start"><div><div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)">' +
     '<div class="card"><span class="sub">本月資產總計</span><div class="mid">$' + fmt(c.total) + '</div><span style="font-size:12px;font-weight:500" class="' + (c.missing ? 'fast' : 'ok') + '">' + (c.missing ? '還有 ' + c.missing + ' 項未填' : '已填完整') + '</span></div>' +
     '<div class="card ' + (c.missing ? '' : (c.diff >= 0 ? 'okbg' : 'overbg')) + '"><span class="sub">本月資產增減</span><div class="mid ' + (c.missing ? 'done' : (c.diff >= 0 ? 'ok' : 'over')) + '">' + (c.missing ? '—' : (c.diff >= 0 ? '+' : '') + money(c.diff)) + '</div><span class="sub" style="font-size:12px">' + (c.missing ? '填完才計算' : '上月 $' + fmt(d.prevTotal)) + '</span></div></div>' +
@@ -1483,6 +1495,8 @@ $('v-assets').addEventListener('click', function (e) {
   if (a === 'as-prev') { S.assetYM = ymAdd(S.assetYM, -1); loadAssets(); }
   if (a === 'as-next') { S.assetYM = ymAdd(S.assetYM, 1); loadAssets(); }
   if (a === 'calc') return openCalc(b.dataset.k);
+  if (a === 'closewiz') return openClose(S.asset.y, S.asset.m);
+  if (a === 'plan') return openPlan();
   if (a === 'at') { S.act = +b.dataset.v; return renderAssetPane(); }
   if (a === 'taxy') { S.taxYear = +b.dataset.v; return renderGoalsTax(S.asset.y, S.asset.m); }
   if (a === 'savemonthly') {
@@ -1745,6 +1759,167 @@ function renderGoalsTax(y, m) {
       }).join('') + '<div class="sub" style="font-size:11px;margin-top:6px">金額來自 App 與試算表紀錄，僅供整理參考；實際扣除額以國稅局規定與正式憑證為準。</div></div>';
   }).catch(function () { tb.innerHTML = ''; });
 }
+
+// ---------- 電子發票比對 ----------
+function openInvoices() {
+  openModal('<b style="font-size:16px">電子發票比對</b>' +
+    '<div class="sub" style="font-size:12px;line-height:1.6">到「財政部電子發票整合服務平台」用手機條碼登入，查詢載具的消費明細，選好月份後匯出 CSV。把檔案選進來，或用手機打開 CSV 全選複製貼上都可以。App 會找出<b>有發票、但沒記帳</b>的消費（多半是現金漏記）。</div>' +
+    '<input type="file" id="invFile" accept=".csv,.txt,text/csv,text/plain" class="f" style="padding:8px">' +
+    '<textarea class="f" id="invText" rows="4" style="height:auto;padding:10px 12px;font-size:16px" placeholder="或把 CSV 內容貼在這裡"></textarea>' +
+    '<button class="submit" data-iv="go" style="margin:0">開始比對</button><div id="invRes"></div>' +
+    '<button class="chip" data-iv="close" style="align-self:center">關閉</button>');
+  const f = $('invFile');
+  if (f) f.onchange = function () {
+    const file = f.files && f.files[0]; if (!file) return;
+    file.arrayBuffer().then(function (buf) {
+      let t = new TextDecoder('utf-8').decode(buf);
+      if (t.indexOf('\uFFFD') >= 0) { try { t = new TextDecoder('big5').decode(buf); } catch (e) {} }
+      $('invText').value = t; toast('已讀入檔案，按「開始比對」', 1500);
+    });
+  };
+  $('modalBox').onclick = function (e) {
+    const b = e.target.closest('[data-iv]'); if (!b) return;
+    const k = b.dataset.iv;
+    if (k === 'close') return closeModal();
+    if (k === 'go') { S.invText = $('invText').value; if (!S.invText.trim()) return toast('請先選檔案或貼上內容'); b.disabled = true; b.textContent = '比對中…'; return runInvoices(false, b); }
+    const i = +b.dataset.i, x = S.inv && S.inv.missing[i]; if (!x) return;
+    if (k === 'cat') { x.cat = b.dataset.v; return renderInvoices(); }
+    if (k === 'add' || k === 'addcard') {
+      const itemEl = $('ivItem' + i), item = (itemEl && itemEl.value.trim()) || x.inv.store;
+      b.disabled = true;
+      return call('add', { date: x.inv.date, cat: x.cat, item: item, amount: x.inv.amount, pay: k === 'add' ? '現金' : '信用卡', note: '發票補記 ' + x.inv.no })
+        .then(function () { toast('已補記 ' + md(x.inv.date) + '「' + item + '」$' + fmt(x.inv.amount), 2000); clearCaches(); afterWrite(); runInvoices(true); }).catch(err);
+    }
+    if (k === 'ignore') {
+      b.disabled = true;
+      return call('ignoreInvoice', { no: x.inv.no, date: x.inv.date, store: x.inv.store, amount: x.inv.amount }).then(function (r) { toast(r.message); runInvoices(true); }).catch(err);
+    }
+  };
+}
+function runInvoices(nosave, btn) {
+  call('invoices', { text: S.invText, nosave: !!nosave }).then(function (r) { S.inv = r; if (btn) { btn.disabled = false; btn.textContent = '重新比對'; } renderInvoices(); })
+    .catch(function (e) { if (btn) { btn.disabled = false; btn.textContent = '開始比對'; } err(e); });
+}
+function renderInvoices() {
+  const r = S.inv, box = $('invRes'); if (!box || !r) return;
+  let h = '<div class="row" style="margin:10px 0 6px;font-size:13px"><span>' + md(r.from) + '～' + md(r.to) + '：' + r.count + ' 張，$' + fmt(r.total) + '</span><span>已記帳 <b class="ok">' + r.matched.length + '</b>｜沒記帳 <b class="over">' + r.missing.length + '</b></span></div>';
+  if (r.skipped) h += '<div class="sub" style="font-size:12px">另有 ' + r.skipped + ' 張已設為忽略。</div>';
+  if (!r.missing.length) h += '<div class="ok" style="font-weight:700;margin:6px 0">每張發票都有對應的紀錄 ✓</div>';
+  const cats = ['食物', '油料', '娛樂', '其他', '教育', '奉獻', '國旅'];
+  h += r.missing.map(function (x, i) {
+    return '<div style="padding:10px;margin-bottom:8px;border-radius:12px;background:var(--overSoft)"><div class="row" style="font-size:14px"><span>' + md(x.inv.date) + '　' + esc(x.inv.store) + '</span><b style="color:var(--red)">$' + fmt(x.inv.amount) + '</b></div>' +
+      (x.inv.items.length ? '<div class="sub" style="font-size:12px;margin:2px 0 6px">' + x.inv.items.slice(0, 6).map(function (it) { return esc(it.name) + ' ' + fmt(it.amount); }).join('、') + (x.inv.items.length > 6 ? '…' : '') + '</div>' : '') +
+      '<div class="items" style="margin:4px 0">' + cats.map(function (c) { return '<button class="chip' + (x.cat === c ? ' on' : '') + '" data-iv="cat" data-i="' + i + '" data-v="' + c + '" style="height:32px;font-size:12px;padding:0 10px">' + c + '</button>'; }).join('') + '</div>' +
+      '<input class="f" id="ivItem' + i + '" value="' + esc(x.item) + '" style="height:38px;margin:4px 0">' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="chip" data-iv="add" data-i="' + i + '" style="height:34px;font-size:12px;border-color:var(--blue);color:var(--blue)">補記（現金）</button><button class="chip" data-iv="addcard" data-i="' + i + '" style="height:34px;font-size:12px;border-color:var(--cardC);color:var(--cardInk)">補記（刷卡）</button><button class="chip" data-iv="ignore" data-i="' + i + '" style="height:34px;font-size:12px">忽略</button></div></div>';
+  }).join('');
+  if (r.matched.length) h += '<details><summary class="sub" style="font-size:12px;cursor:pointer">已有紀錄的 ' + r.matched.length + ' 張</summary><div style="font-size:12px;line-height:1.7;margin-top:4px">' +
+    r.matched.map(function (m) { return '✓ ' + md(m.inv.date) + ' ' + esc(m.inv.store) + ' $' + fmt(m.inv.amount) + ' ↔ ' + esc(m.rec.cat) + '・' + esc(m.rec.item) + '（' + esc(m.rec.pay) + (m.how === 'term' ? '，在算式 ' + esc(m.rec.note) + ' 裡' : '') + '）'; }).join('<br>') + '</div></details>';
+  box.innerHTML = h;
+}
+// ---------- 月底結帳精靈 ----------
+function openClose(y, m) {
+  if (!y) { const t = todayYM(); y = t.y; m = t.m; }
+  openModal('<div class="loading">檢查本月狀態…</div>');
+  call('close', { y: y, m: m }).then(renderClose).catch(function (e) { closeModal(); err(e); });
+}
+function renderClose(c) {
+  S.closeData = c;
+  const pct = c.total ? Math.round(c.ok / c.total * 100) : 0;
+  let h = '<div class="row"><button class="iconbtn" data-cl="prev" aria-label="上個月">' + ICON.left + '</button><b style="font-size:16px">' + c.y + '年' + c.m + '月 月底結帳</b><button class="iconbtn" data-cl="next" aria-label="下個月">' + ICON.right + '</button></div>' +
+    '<div class="bar" style="margin:4px 0"><i style="width:' + pct + '%;background:var(--green)"></i></div><div class="sub" style="font-size:12px;text-align:center">完成 ' + c.ok + ' ／ ' + c.total + ' 項' + (c.done ? '｜已於 ' + esc(c.done) + ' 完成結帳 ✓' : '') + '</div>';
+  h += c.items.map(function (x) {
+    let act = '';
+    if (x.key === 'cash') act = '<div class="row" style="margin-top:6px"><input class="f" id="clCash" inputmode="numeric" placeholder="實際現金（郵局＋錢包）" style="height:38px"><button class="chip" data-cl="cash" style="height:38px;flex-shrink:0">儲存</button></div>';
+    else if (!x.auto) act = '<button class="chip' + (x.manual ? ' on' : '') + '" data-cl="tick" data-k="' + x.key + '" style="height:32px;font-size:12px;margin-top:6px;--main:var(--green)">' + (x.manual ? '✓ 已完成' : '標記為已完成') + '</button>';
+    const go = { records: '到紀錄頁', prepaid: '去繳費', bill: '去對帳', invoice: '匯入發票', assets: '去盤點', today: '到今日頁' }[x.action];
+    if (go && !x.ok) act += '<button class="chip" data-cl="go" data-a="' + x.action + '" style="height:32px;font-size:12px;margin:6px 0 0 6px">' + go + ' ›</button>';
+    return '<div style="padding:10px 0;border-top:1px solid var(--chip)"><div class="row" style="align-items:flex-start"><span style="font-size:14px;font-weight:500"><span class="' + (x.ok ? 'ok' : 'fast') + '" style="font-weight:700">' + (x.ok ? '✓' : '○') + '</span> ' + esc(x.title) + '</span>' + (x.auto ? '<span class="sub" style="font-size:11px">自動檢查</span>' : '') + '</div><div class="sub" style="font-size:12px;line-height:1.5;padding-left:18px">' + esc(x.detail) + '</div><div style="padding-left:18px">' + act + '</div></div>';
+  }).join('');
+  h += c.done ? '<button class="chip" data-cl="unfinish" style="align-self:center">取消完成標記</button>' : '<button class="submit" data-cl="finish" style="margin:0;background:var(--green)">完成本月結帳</button>';
+  h += '<button class="chip" data-cl="close" style="align-self:center">關閉</button>';
+  $('modalBox').innerHTML = h;
+  $('modalBox').onclick = function (e) {
+    const b = e.target.closest('[data-cl]'); if (!b) return;
+    const k = b.dataset.cl;
+    if (k === 'close') return closeModal();
+    if (k === 'prev' || k === 'next') { const n = ymAdd({ y: c.y, m: c.m }, k === 'prev' ? -1 : 1); return openClose(n.y, n.m); }
+    const upd = function (args) { b.disabled = true; call('setClose', Object.assign({ y: c.y, m: c.m }, args)).then(function (r) { renderClose(r); afterWrite(); }).catch(err); };
+    if (k === 'tick') return upd({ key: b.dataset.k, val: !c.items.filter(function (x) { return x.key === b.dataset.k; })[0].manual });
+    if (k === 'cash') { const v = evalExpr($('clCash').value); if (isNaN(v)) return toast('請輸入金額'); return upd({ cash: Math.round(v) }); }
+    if (k === 'finish') { if (c.ok < c.total && !confirm('還有 ' + (c.total - c.ok) + ' 項沒完成，仍要標記為已結帳？')) return; return upd({ finish: true }); }
+    if (k === 'unfinish') return upd({ finish: false });
+    if (k === 'go') {
+      const a = b.dataset.a; closeModal();
+      if (a === 'invoice') return openInvoices();
+      if (a === 'bill') { const n = ymAdd({ y: c.y, m: c.m }, 1); return openBill(n); }
+      if (a === 'prepaid') { S.e.pay = '預扣'; S.e.amt = ''; S.e.ppKey = null; S.e.date = S.form.today; show('entry'); return renderEntry(); }
+      return show(a);
+    }
+  };
+}
+// ---------- 明年預算試算 ----------
+S.plan = { src: 'max', infl: 2, adj: [0, 0, 0, 0, 0, 0] };
+function openPlan() { show('plan'); const el = $('v-plan'); el.innerHTML = '<div class="loading">讀取今年各月資料…</div>'; const y = +S.form.today.slice(0, 4); call('planBase', { y: y }).then(function (b) { S.plan.base = b; renderPlan(); }).catch(err); }
+function planCalc() {
+  const P = S.plan, b = P.base, n = b.cats.length;
+  const thisYear = b.months.map(function (mo) { return mo.past ? mo.actual : mo.budget; });
+  const baseM = b.months.map(function (mo) {
+    return mo.budget.map(function (bud, c) { const act = mo.actual[c]; return P.src === 'budget' ? bud : (P.src === 'actual' ? (mo.past ? act : bud) : (mo.past ? Math.max(act, bud) : bud)); });
+  });
+  const plan = baseM.map(function (row) { return row.map(function (v, c) { return Math.max(0, Math.round(v * (1 + P.infl / 100) / 100) * 100 + (+P.adj[c] || 0)); }); });
+  const sumCol = function (mat, c) { return mat.reduce(function (s, row) { return s + row[c]; }, 0); };
+  const sumAll = function (mat) { return mat.reduce(function (s, row) { return s + row.reduce(function (a, x) { return a + x; }, 0); }, 0); };
+  return { thisYear: thisYear, plan: plan, budgetY: b.months.map(function (mo) { return mo.budget; }), sumCol: sumCol, sumAll: sumAll, n: n };
+}
+function renderPlan() {
+  const P = S.plan, b = P.base, el = $('v-plan'), C = planCalc();
+  const tyTot = C.sumAll(C.thisYear), plTot = C.sumAll(C.plan), delta = plTot - tyTot;
+  const saving = b.saving, newSaving = saving != null ? saving - delta / 12 : null;
+  const months = newSaving && newSaving > 0 ? Math.ceil(b.emergencyGap / newSaving) : null;
+  let h = '<button class="chip" data-pl="back" style="border:none;background:none;padding:0;color:var(--blue)">‹ 資產</button><h1 style="margin:6px 0 12px">' + (b.y + 1) + ' 年預算試算</h1>';
+  h += '<div class="grid2" style="align-items:start"><div><div class="card"><b style="font-size:15px">試算方式</b>' +
+    '<div class="sub" style="font-size:12px;margin:8px 0 4px">以今年的哪個數字當基礎</div><div class="items">' +
+    [['max', '實際與預算取高'], ['actual', '今年實際'], ['budget', '今年預算']].map(function (o) { return '<button class="chip' + (P.src === o[0] ? ' on' : '') + '" data-pl="src" data-v="' + o[0] + '" style="height:36px;font-size:13px">' + o[1] + '</button>'; }).join('') + '</div>' +
+    '<div class="row" style="margin-top:10px"><span style="font-size:14px">物價調整</span><div style="display:flex;align-items:center;gap:6px"><button class="chip" data-pl="infl" data-v="-1" style="height:34px">−</button><b>' + P.infl + '%</b><button class="chip" data-pl="infl" data-v="1" style="height:34px">＋</button></div></div>' +
+    '<div class="sub" style="font-size:12px;margin:10px 0 4px">各科目每月再加減（例如食物每月 +1,000）</div>' +
+    b.cats.map(function (c, i) { return '<div class="row" style="padding:4px 0"><span style="font-size:14px">' + c + '</span><input class="f" data-adj="' + i + '" inputmode="numeric" value="' + (P.adj[i] || '') + '" placeholder="0" style="width:110px;height:38px;text-align:right"></div>'; }).join('') +
+    '<div class="sub" style="font-size:11px;margin-top:6px">今年還沒過完的月份（' + (12 - b.done) + ' 個月）用預算當實際。季節月份（春節、暑假）會保留各月原本的高低。</div></div></div>';
+  h += '<div><div class="card"><b style="font-size:15px">試算結果</b>' +
+    '<div class="row" style="margin-top:8px"><span>' + b.y + ' 年生活費</span><b>$' + fmt(tyTot) + '</b></div>' +
+    '<div class="row"><span>' + (b.y + 1) + ' 年試算</span><b class="' + (delta > 0 ? 'fast' : 'ok') + '">$' + fmt(plTot) + '</b></div>' +
+    '<div class="row"><span>差異</span><b class="' + (delta > 0 ? 'over' : 'ok') + '">' + (delta >= 0 ? '+' : '−') + '$' + fmt(Math.abs(delta)) + '（每月平均 ' + (delta >= 0 ? '+' : '−') + '$' + fmt(Math.abs(delta / 12)) + '）</b></div>' +
+    (saving != null ? '<div style="margin-top:10px;padding:10px;border-radius:12px;background:var(--bg);font-size:13px;line-height:1.6">今年平均每月結餘約 <b>$' + fmt(saving) + '</b>（滿月記帳的收入 − 支出）。照這份預算、收入不變，明年每月結餘約 <b>$' + fmt(newSaving) + '</b>。' +
+      (b.emergencyGap ? (months ? '緊急備用金還差 $' + fmt(b.emergencyGap) + '，全部用結餘補，約 <b>' + months + ' 個月</b>補滿。' : '結餘不足，緊急備用金無法用每月結餘補滿。') : '緊急備用金已補滿。') + '</div>' : '') +
+    '</div>';
+  // chart: monthly totals
+  const tyM = C.thisYear.map(function (r) { return r.reduce(function (a, x) { return a + x; }, 0); }), plM = C.plan.map(function (r) { return r.reduce(function (a, x) { return a + x; }, 0); });
+  const ymax = niceMax(Math.max.apply(null, tyM.concat(plM)) * 1.1), X0 = 40, X1 = 352, Y0 = 210, Y1 = 14, bw = (X1 - X0) / 12;
+  let svg = svgOpen('今年與明年每月生活費') + yAxis(ymax, X0, X1, Y0, Y1);
+  tyM.forEach(function (v, i) { const hh = v / ymax * (Y0 - Y1); svg += '<rect x="' + (X0 + i * bw + 4).toFixed(1) + '" y="' + (Y0 - hh).toFixed(1) + '" width="' + (bw - 8).toFixed(1) + '" height="' + hh.toFixed(1) + '" rx="3" fill="#B8C0CC"/><text x="' + (X0 + i * bw + bw / 2).toFixed(1) + '" y="228" font-size="10" text-anchor="middle" fill="#5B6675">' + (i + 1) + '月</text>'; });
+  svg += '<polyline points="' + plM.map(function (v, i) { return (X0 + i * bw + bw / 2).toFixed(1) + ',' + (Y0 - v / ymax * (Y0 - Y1)).toFixed(1); }).join(' ') + '" fill="none" stroke="#2458C6" stroke-width="3"/>';
+  plM.forEach(function (v, i) { svg += '<circle cx="' + (X0 + i * bw + bw / 2).toFixed(1) + '" cy="' + (Y0 - v / ymax * (Y0 - Y1)).toFixed(1) + '" r="3.5" fill="#2458C6"/>'; });
+  h += '<div class="card"><b style="font-size:15px">每月生活費</b><div class="legend" style="margin:6px 0"><span><b style="background:#B8C0CC;height:8px"></b>' + b.y + ' 年（已過月份為實際）</span><span><b style="background:#2458C6"></b>' + (b.y + 1) + ' 年試算</span></div><div style="height:240px">' + svg + '</svg></div></div>';
+  // table by category
+  h += '<div class="card"><b style="font-size:15px">各科目全年</b><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px"><tr class="sub" style="text-align:right"><th style="text-align:left;font-weight:500">科目</th><th style="font-weight:500">今年預算</th><th style="font-weight:500">今年實際＊</th><th style="font-weight:500">明年試算</th></tr>' +
+    b.cats.map(function (c, i) { return '<tr style="text-align:right;border-top:1px solid var(--chip)"><td style="text-align:left;padding:6px 0">' + c + '</td><td>' + fmt(C.sumCol(C.budgetY, i)) + '</td><td>' + fmt(C.sumCol(C.thisYear, i)) + '</td><td><b>' + fmt(C.sumCol(C.plan, i)) + '</b></td></tr>'; }).join('') +
+    '</table></div><div class="sub" style="font-size:11px;margin-top:4px">＊還沒過完的月份以預算計</div>' +
+    '<button class="chip" data-pl="copy" style="height:38px;margin-top:10px;width:100%">複製明年 12 個月 × 科目的表格</button><div class="sub" style="font-size:11px;margin-top:4px">可直接貼到明年家計簿各月的預算列，或給我幫你建 ' + (b.y + 1) + ' 年的檔案。</div></div></div></div>';
+  el.innerHTML = h;
+  el.querySelectorAll('input[data-adj]').forEach(function (inp) { inp.onchange = function () { const v = evalExpr(inp.value || '0'); P.adj[+inp.dataset.adj] = isNaN(v) ? 0 : Math.round(v); renderPlan(); }; });
+}
+$('v-plan').addEventListener('click', function (e) {
+  const b = e.target.closest('[data-pl]'); if (!b) return;
+  const k = b.dataset.pl, P = S.plan;
+  if (k === 'back') return show('assets');
+  if (k === 'src') { P.src = b.dataset.v; return renderPlan(); }
+  if (k === 'infl') { P.infl = Math.max(-10, Math.min(20, P.infl + (+b.dataset.v))); return renderPlan(); }
+  if (k === 'copy') {
+    const C = planCalc(), b0 = P.base;
+    const tsv = ['月份\t' + b0.cats.join('\t') + '\t合計'].concat(C.plan.map(function (r, i) { return (i + 1) + '月\t' + r.join('\t') + '\t' + r.reduce(function (a, x) { return a + x; }, 0); })).join('\n');
+    (navigator.clipboard ? navigator.clipboard.writeText(tsv) : Promise.reject()).then(function () { toast('已複製，可以貼到試算表'); }).catch(function () { openModal('<b>長按全選複製</b><textarea class="f" rows="12" style="height:auto;font-size:13px">' + esc(tsv) + '</textarea><button class="chip" onclick="closeModal()">關閉</button>'); });
+  }
+});
 
 // ---------- 視窗 ----------
 function openModal(html) { $('modalBox').innerHTML = html; $('modal').style.display = 'flex'; }
