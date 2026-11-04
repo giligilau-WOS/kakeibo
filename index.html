@@ -202,7 +202,7 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.04-0233';
+const APP_VERSION = '2026.11.04-0245';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -1558,7 +1558,8 @@ function renderBill(b) {
   $('modalBox').innerHTML = '<div class="row"><button class="iconbtn" data-b="prev" aria-label="上一期">' + ICON.left + '</button><b style="font-size:16px">' + b.y + '年' + b.m + '月6日帳單</b><button class="iconbtn" data-b="next" aria-label="下一期">' + ICON.right + '</button></div>' +
     '<div class="sub" style="font-size:12px;text-align:center">消費期間 ' + md(b.from) + '～' + md(b.to) + '</div>' +
     '<div class="card" style="background:var(--bg);margin:0"><div class="row"><span>App 記錄的刷卡</span><b>$' + fmt(b.recorded) + '</b></div>' + (b.fixed ? '<div class="sub" style="font-size:12px">含固定訂閱／分期 $' + fmt(b.fixed) + '</div>' : '') +
-    '<div class="row" style="margin-top:8px"><span>帳單金額</span><input class="f" id="billAmt" inputmode="numeric" style="width:140px;text-align:right" value="' + (b.bill == null ? '' : b.bill) + '" placeholder="輸入帳單金額"></div>' +
+    '<div class="row" style="margin-top:8px"><span>本期應繳金額<br><span class="sub" style="font-size:11px">（帳單上的總額，你輸入的）</span></span><input class="f" id="billAmt" inputmode="numeric" style="width:140px;text-align:right" value="' + (b.bill == null ? '' : b.bill) + '" placeholder="例如 21345"></div>' +
+    (b.detailTotal != null ? '<div class="sub" style="font-size:12px;margin-top:4px">上次貼上的明細合計 $' + fmt(b.detailTotal) + '（只用來逐筆比對，不會取代上面的應繳金額）</div>' : '') +
     (diffTxt ? '<div style="margin-top:8px;font-size:14px">' + diffTxt + '</div>' : '') + '</div>' +
     '<button class="submit" data-b="save" style="margin:0">儲存帳單金額並比對</button>' +
     '<div class="card" style="background:var(--bg);margin:0"><b style="font-size:14px">逐筆比對帳單明細</b><div class="sub" style="font-size:12px;line-height:1.5;margin:4px 0 8px">從銀行 App 或電子帳單複製明細貼上，或一行打一筆金額（可含日期、店名）。</div>' +
@@ -1684,7 +1685,12 @@ function billRowsHTML(rows, mr) {
 }
 function renderMatch(r) {
   const box = $('matchRes'); if (!box) return;
-  let h = '<div class="row" style="margin:10px 0 6px;font-size:13px"><span>帳單 ' + r.lines + ' 筆，合計 <b>$' + fmt(r.billTotal) + '</b></span><span>對上 <b class="ok">' + r.matched.length + '</b> 筆</span></div>';
+  const extN = r.matched.filter(function (x) { return x.ext; }).length;
+  let h = '<div class="row" style="margin:10px 0 6px;font-size:13px"><span>讀到明細 ' + r.lines + ' 筆，合計 <b>' + money(r.billTotal) + '</b></span><span>對上 <b class="ok">' + r.matched.length + '</b> 筆</span></div>';
+  if (r.billInput != null && r.billInput !== r.billTotal) h += '<div class="sub" style="font-size:12px;line-height:1.5">明細合計和你輸入的應繳金額 $' + fmt(r.billInput) + ' 不同，可能是明細沒有貼完整，或含前期餘額、手續費調整。</div>';
+  h += '<details style="margin:4px 0 8px"><summary class="sub" style="font-size:12px;cursor:pointer">查看讀到的 ' + r.lines + ' 筆明細</summary><div style="font-size:12px;line-height:1.7;margin-top:4px">' +
+    (r.parsed || []).map(function (L) { return (L.date || '—') + '　' + esc(L.desc || '（未註明）') + '　<b>' + money(L.amount) + '</b>'; }).join('<br>') + '</div></details>';
+  if (extN) h += '<div class="sub" style="font-size:12px;margin-bottom:6px">其中 ' + extN + ' 筆是跨期入帳（消費日在帳單期間前後幾天，銀行延後入帳）。</div>';
   if (r.billOnly.length) {
     h += '<div style="font-size:13px;font-weight:700;color:var(--red);margin:8px 0 4px">帳單有、App 沒有刷卡紀錄（' + r.billOnly.length + ' 筆）</div>' + r.billOnly.map(function (x) {
       const i = r.billOnly.indexOf(x);
