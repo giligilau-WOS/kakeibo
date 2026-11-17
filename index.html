@@ -209,7 +209,7 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.11-1139';
+const APP_VERSION = '2026.11.17-1652';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -1975,26 +1975,37 @@ function renderEnv() {
     }).join('') + '<div class="sub" style="font-size:11px;margin-top:6px">按「已歸還」會在試算表記一筆「日常戶 → 預扣帳戶」，並從當月可花的錢扣掉。</div></div>';
   }
   d.accounts.forEach(function (a) {
-    const gap = a.diff;
+    const ln = function (label, now, ye, opt) {
+      opt = opt || {};
+      return '<div class="row" style="padding:5px 0;border-top:1px solid var(--chip);font-size:13px' + (opt.bold ? ';font-weight:700' : '') + '"><span style="flex:1;min-width:0">' + label + '</span>' +
+        '<span style="width:84px;text-align:right" class="' + (now < 0 ? 'over' : '') + '">' + money(now) + '</span><span class="sub" style="width:84px;text-align:right">' + money(ye) + '</span></div>';
+    };
+    let tb = '<div class="row" style="font-size:11px;padding-bottom:2px"><span class="sub" style="flex:1">項目</span><span class="sub" style="width:84px;text-align:right">' + d.m + ' 月底</span><span class="sub" style="width:84px;text-align:right">年底預估</span></div>';
+    tb += ln(a.items.length + ' 個信封合計', a.envSum, a.envYearEnd);
+    tb += ln('帳戶未分配緩衝底金' + (a.opening ? '（含' + esc(a.openingLabel) + '）' : ''), a.buffer, a.bufferYearEnd);
+    a.lines.forEach(function (L) { tb += ln(esc(L.label), L.now, L.yearEnd); });
+    if (a.tail || a.tailYearEnd) tb += ln('<span class="sub">小數尾差</span>', a.tail, a.tailYearEnd);
+    tb += ln('＝ ' + esc(a.acct) + '帳戶總結餘', a.actual, a.actualYearEnd, { bold: true });
     let note = '';
-    if (a.other.length) note += '今年從帳戶支出、但不屬於任何項目：' + a.other.map(function (o) { return esc(o.name.replace(/（.*$/, '')) + ' ' + money(o.amount); }).join('、') + '。';
-    if (a.carryActual != null && a.carryTotal) note += '2026 年底各項目應結轉 $' + fmt(a.carryTotal) + '，實際轉入 $' + fmt(a.carryActual) + (a.carryTotal > a.carryActual ? '，差額是 2026 年挪用、尚未補回的錢。' : '。');
-    if (a.opening) note += esc(a.openingLabel) + ' $' + fmt(a.opening) + ' 不屬於任何項目。';
-    h += '<div class="card"><div class="row"><b style="font-size:16px">' + esc(a.acct) + '</b><span class="sub" style="font-size:12px">' + d.m + ' 月底基準</span></div>' +
-      '<div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-top:8px"><div class="col"><span class="sub" style="font-size:12px">各項目合計</span><b style="font-size:18px">$' + fmt(a.envSum) + '</b></div><div class="col"><span class="sub" style="font-size:12px">帳戶實際</span><b style="font-size:18px">$' + fmt(a.actual) + '</b></div></div>' +
-      (Math.abs(gap) > 0 ? '<div style="margin-top:8px;padding:8px 10px;border-radius:10px;font-size:12px;line-height:1.6;background:' + (gap < 0 ? 'var(--overSoft);color:var(--redInk)' : 'var(--greenSoft);color:var(--greenInk)') + '"><b>' + (gap < 0 ? '帳戶比各項目合計少 $' + fmt(-gap) : '帳戶比各項目合計多 $' + fmt(gap)) + '</b><br>' + note + '</div>' : '') + '</div>';
+    if (a.overdraft.length) note += '<div style="margin-top:8px;padding:8px 10px;border-radius:10px;font-size:12px;line-height:1.6;background:var(--overSoft);color:var(--redInk)"><b>需底金沖銷 ' + a.overdraft.length + ' 個：' + a.overdraft.map(esc).join('、') + '</b>（目前 ' + money(a.overdraftSum) + '，年底 ' + money(a.overdraftSumYE) + '）<br>' +
+      '由緩衝底金抵銷後，緩衝剩 <b>' + money(a.bufferAfterOffset) + '</b>；年底預估剩 <b>' + money(a.bufferAfterOffsetYE) + '</b>' + (a.bufferAfterOffsetYE < 0 ? '，年底前需要補一點進來' : '') + '。</div>';
+    if (a.ahead.length) note += '<div class="sub" style="font-size:12px;line-height:1.6;margin-top:6px">暫時超前支付、年底會回正：' + a.ahead.map(esc).join('、') + '。</div>';
+    if (a.carryActual != null && a.carryTotal) note += '<div class="sub" style="font-size:12px;line-height:1.6;margin-top:6px">2026 年底各信封結轉 $' + fmt(a.carryTotal) + '，實際轉入 $' + fmt(a.carryActual) + '。</div>';
+    h += '<div class="card"><div class="row"><b style="font-size:16px">' + esc(a.acct) + '</b><span class="sub" style="font-size:12px">本月應繳視為已繳</span></div><div style="margin-top:8px">' + tb + '</div>' + note + '</div>';
     h += '<div class="grid2" style="align-items:start">' + a.items.map(function (it) {
-      const low = it.balance < 0, short = it.next && it.balance < (it.next.m === d.m ? 0 : 0) ;
+      const low = it.balance < 0;
       const cls = low ? 'over' : (it.borrowed ? 'fast' : 'ok');
       return '<div class="card" style="margin-bottom:0"><div class="row"><b style="font-size:15px">' + esc(it.name) + '</b><span class="' + cls + '" style="font-size:20px;font-weight:700">' + money(it.balance) + '</span></div>' +
-        '<div class="sub" style="font-size:12px;line-height:1.6;margin-top:4px">' + (it.carry ? '去年結轉 $' + fmt(it.carry) + '｜' : '') + '今年已預留 $' + fmt(it.allocYTD) + '（全年 $' + fmt(it.allocYear) + '）｜已繳 $' + fmt(it.paidYTD) +
+        '<div class="sub" style="font-size:12px;line-height:1.6;margin-top:4px">' + (it.carry ? '去年結轉 $' + fmt(it.carry) + '｜' : '') + '已預存 $' + fmt(it.allocYTD) + '（全年 $' + fmt(it.allocYear) + '）｜已支出 $' + fmt(it.paidYTD) +
+        (it.attrNote.length ? '<br>（含 ' + it.attrNote.map(esc).join('、') + '）' : '') +
         (it.pending ? '<br>本月待繳 <b>$' + fmt(it.pending) + '</b>' : '') + (it.borrowed ? '<br><span class="fast">已借出 $' + fmt(it.borrowed) + '</span>' : '') +
-        '<br>下次繳費：' + (it.next ? it.next.m + ' 月 $' + fmt(it.next.amount) : '今年沒有了') + (low ? '<br><span class="over">超前支付，由其他項目暫時墊付</span>' : '') + '</div>' +
+        '<br>年底預估 <b class="' + (it.yearEnd < 0 ? 'over' : '') + '">' + money(it.yearEnd) + '</b>' +
+        '<br>下次繳費：' + (it.next ? it.next.m + ' 月 $' + fmt(it.next.amount) : '今年沒有了') + (low ? '<br><span class="over">' + (it.yearEnd < 0 ? '透支，由緩衝底金沖銷' : '暫時超前支付，年底會回正') + '</span>' : '') + '</div>' +
         '<div class="row" style="margin-top:8px"><span style="font-size:13px">可調用 <b class="' + (it.safe ? 'ok' : 'done') + '">$' + fmt(it.safe) + '</b></span>' +
         (isNow && it.safe > 0 ? '<button class="chip" data-ev="borrow" data-k="' + esc(it.key) + '" style="height:34px;font-size:12px;border-color:var(--green);color:var(--green)">調用到日常</button>' : '') + '</div></div>';
     }).join('') + '</div>';
   });
-  h += '<div class="sub" style="font-size:11px;line-height:1.6;margin:12px 0">「可調用」＝借出後，每個月照預留、照繳費，直到年底都不會透支的金額。2026 年依台銀攤平表、2027 年依台銀與永豐的攤平表重建；2027 年各項目的期初是 2026 年底的結轉。</div>';
+  h += '<div class="sub" style="font-size:11px;line-height:1.6;margin:12px 0">信封餘額＝1 月到本月的預存 − 實支（本月應繳視為已繳）；年底預估再加上 12 月為止的預存與實支。2026 年 5 月「投資轉出」算在綜所稅、10 月「信用卡帳單代繳」算在小布丁夏令營。「可調用」＝借出後直到年底都不會透支的金額。</div>';
   el.innerHTML = h;
 }
 $('v-env').addEventListener('click', function (e) {
