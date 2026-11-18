@@ -7,7 +7,7 @@
 
 - **先討論設計，經使用者核准後才寫程式碼。** 功能改動要先提出方案（資料放哪張表、哪些欄位、UI 怎麼呈現），等使用者說好再動手。
 - 不要直接動到試算表的歷史資料。凡是會改寫儲存格的函式（例如 `修正2026年回補與預算()` 這類一次性修正），都要先說明會改哪些格子，並保留還原的方法（參考 `App紀錄` 表的 `prevM` 還原機制）。
-- 改完後，提醒使用者要部署哪一邊：Apps Script（`clasp push` 加上重新部署網頁應用程式），或 GitHub Pages（push 到 `main`）。
+- 改完後，提醒使用者要部署哪一邊：Apps Script（貼上並部署新版本，見「部署方式」），或 GitHub Pages（push 到 `main`）。
 
 ## 檔案結構
 
@@ -23,18 +23,17 @@
 
 **使用者只用 GitHub 版前端（`index.html`）。** `.gs` 裡的 `APP_HTML` 是舊的 Apps Script 網頁版，已不維護：改 UI 只改 `index.html`，不需要同步 `APP_HTML`，除非使用者明確要求。
 
-### Apps Script 同步（clasp）
+### 部署方式（使用者只在網頁上作業，不用 clasp）
 
-`.clasp.json` 的 `rootDir` 指向 `gas/`。在使用者電腦上的流程：
+使用者用網頁版 Claude Code，常在學校電腦上作業，沒有固定的電腦可以跑 clasp。
 
-```
-npm install -g @google/clasp
-clasp login
-clasp pull     # 從 Apps Script「Giau的家計簿App」拉下最新版
-clasp push     # 改完推回去，再到 Apps Script 編輯器「部署 → 管理部署 → 編輯 → 新版本」
-```
-
-在 `gas/` 建立之前，`Code_單一檔案版.gs` 仍是唯一的後端原始碼。
+- **前端**：`index.html` push 到 `main`，GitHub Pages 會自動更新。
+- **後端**：**repo 裡的 `Code_單一檔案版.gs` 是唯一正式版本。** 改完 push 之後，請使用者照下列步驟手動貼到 Apps Script：
+  1. 打開 `https://raw.githubusercontent.com/giligilau-WOS/kakeibo/main/Code_單一檔案版.gs`，全選複製。
+  2. 到 Apps Script「Giau的家計簿App」編輯器，把程式碼檔全部取代貼上，然後儲存。
+  3. 依序點「部署 → 管理部署 → 編輯（鉛筆）→ 版本：新版本 → 部署」。網址不會變，前端不用改設定。
+- 後端有改的話，回報時要明確寫出「需要貼到 Apps Script 並部署新版本」。只改前端就不用。
+- 使用者如果直接在 Apps Script 編輯器裡改了程式，要請他把整份貼回 repo，否則下次貼上時會覆蓋掉那些修改。
 
 ## 資料與帳戶模型
 

@@ -26,14 +26,8 @@ function syntax(label, code) {
   }
 }
 
-// 1. 後端 .gs（根目錄與 gas/）
-const gsFiles = [];
-for (const dir of ['.', 'gas']) {
-  let names = [];
-  try { names = readdirSync(join(root, dir)); } catch { continue; }
-  const pattern = dir === 'gas' ? /\.(gs|js)$/ : /\.gs$/;   // clasp 拉下來的檔案是 .js
-  for (const n of names) if (pattern.test(n)) gsFiles.push(join(dir, n));
-}
+// 1. 後端 .gs（根目錄）
+const gsFiles = readdirSync(root).filter(n => n.endsWith('.gs'));
 for (const f of gsFiles) syntax(f, readFileSync(join(root, f), 'utf8'));
 
 // 2. index.html 的 <script>
