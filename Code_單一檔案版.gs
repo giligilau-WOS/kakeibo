@@ -26,6 +26,10 @@ const CONFIG = {
   timezone: 'Asia/Taipei'
 };
 
+// 後端版本：每次修改這個檔案都要更新（tools/check.mjs 會檢查）。
+// 前端 index.html 的 NEED_BACKEND 若比這個新，App 會提醒「後端還沒部署新版本」。
+const BACKEND_VERSION = '2026.11.18-1800';
+
 // 各年度檔案的差異（儲存格位置）
 const PROFILE = {
   2026: {
@@ -200,8 +204,9 @@ function onceByRid_(rid, method, args) {
 function route_(method, args) {
   switch (method) {
     case 'form': return getFormData_();
-    case 'init': return { form: getFormData_(), dashboard: getDashboard_(todayStr_()) };
-    case 'refresh': bumpVer_(); return { form: getFormData_(), dashboard: getDashboard_(todayStr_()) };
+    case 'init': return { form: getFormData_(), dashboard: getDashboard_(todayStr_()), backend: BACKEND_VERSION };
+    case 'refresh': bumpVer_(); return { form: getFormData_(), dashboard: getDashboard_(todayStr_()), backend: BACKEND_VERSION };
+    case 'version': return { backend: BACKEND_VERSION };
     case 'add': return addEntry_(args);
     case 'update': return updateEntry_(args);
     case 'delete': return deleteEntry_(args);

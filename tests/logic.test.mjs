@@ -387,6 +387,15 @@ test('冪等：校正一卡通餘額送兩次，結果相同', () => {
   assert.equal(a, 777); assert.equal(b, 777);
 });
 
+// ---------------------------------------------------------------- 版本
+test('版本：init／refresh／version 都回報後端版本，且不低於前端需要的版本', () => {
+  const { g } = fresh(12), v = g.get('BACKEND_VERSION');
+  assert.match(v, /^\d{4}\.\d{2}\.\d{2}-\d{4}$/);
+  for (const m of ['init', 'refresh', 'version']) assert.equal(g.call('api', 't', m, {}).backend, v, m);
+  const need = readFileSync(new URL('../index.html', import.meta.url), 'utf8').match(/NEED_BACKEND = '([^']+)'/)[1];
+  assert.ok(need <= v, '前端需要 ' + need + '，後端只有 ' + v);
+});
+
 // ---------------------------------------------------------------- 安全
 test('密碼錯誤時，任何功能都不會執行', () => {
   const { g, wb } = fresh(9), before = snap(wb.month(11));

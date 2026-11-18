@@ -17,7 +17,8 @@
 | `index.html` | GitHub Pages 獨立前端（PWA），用 `fetch` POST 到 Apps Script `/exec`，連線網址和密碼 `k` 存在 localStorage `kakeiboCfg` |
 | `manifest.json`、`icon-*.png` | PWA 設定 |
 | `kid-demo.html` | **另一個專案**：小布丁的「學習面板」，與家計簿無關，改家計簿時不要動它 |
-| `tools/check.mjs` | 低成本檢查：語法＋機密掃描（`node tools/check.mjs`） |
+| `tools/check.mjs` | 低成本檢查：語法、機密掃描、版本號（`node tools/check.mjs`） |
+| `tests/` | 後端屬性測試 `node --test 'tests/**/*.test.mjs'`、前端流程測試 `node tests/e2e.mjs`（假試算表，不連正式資料） |
 | `REVIEW.md` | Code review 規範與依 diff 觸發的檢查表 |
 | `.claude/skills/verify/` | 提交前驗證技能（`/verify`） |
 
@@ -33,6 +34,7 @@
   2. 到 Apps Script「Giau的家計簿App」編輯器，把程式碼檔全部取代貼上，然後儲存。
   3. 依序點「部署 → 管理部署 → 編輯（鉛筆）→ 版本：新版本 → 部署」。網址不會變，前端不用改設定。
 - 後端有改的話，回報時要明確寫出「需要貼到 Apps Script 並部署新版本」。只改前端就不用。
+- **版本號**：改 `.gs` 要調高 `BACKEND_VERSION`；改 `index.html` 要調高 `APP_VERSION`；前端用到後端新功能時，把 `NEED_BACKEND` 調到對應的後端版本（`tools/check.mjs` 會擋忘記升版）。手機連到的後端比 `NEED_BACKEND` 舊時，App 頂端會提醒「後端還沒部署新版本」，今日頁底部也會顯示前後端版本。
 - 使用者如果直接在 Apps Script 編輯器裡改了程式，要請他把整份貼回 repo，否則下次貼上時會覆蓋掉那些修改。
 
 ## 資料與帳戶模型

@@ -209,7 +209,9 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.18-1600';
+const APP_VERSION = '2026.11.18-1800';
+// 這個前端需要的最低後端版本（Code_單一檔案版.gs 的 BACKEND_VERSION）。前端用到後端新功能時要跟著調高。
+const NEED_BACKEND = '2026.11.18-1800';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -747,7 +749,7 @@ function renderToday() {
   h += '<div class="card wide-only"><b style="font-size:15px">各科目快覽</b><div class="grid2" style="margin-top:10px">' + d.cats.filter(function (c) { return c.budget > 0; }).map(function (c) {
     const p = PACE[c.pace]; return '<div class="col"><div class="row" style="font-size:13px"><span>' + esc(c.name) + '</span><b class="' + p[1] + '">' + pct(c.total, c.budget) + '%</b></div>' + bar(c.cash, c.card, c.budget) + '</div>';
   }).join('') + '</div></div>';
-  h += '<div style="text-align:center;margin:4px 0 12px"><button class="chip" data-act="cfg" style="height:36px;font-size:13px;color:var(--sub)">連線設定</button><div class="sub" style="font-size:11px;margin-top:6px">版本 ' + APP_VERSION + '</div></div>';
+  h += '<div style="text-align:center;margin:4px 0 12px"><button class="chip" data-act="cfg" style="height:36px;font-size:13px;color:var(--sub)">連線設定</button><div class="sub" style="font-size:11px;margin-top:6px">前端版本 ' + APP_VERSION + '｜後端版本 ' + esc(S.backend || '未知（舊版）') + '</div></div>';
   el.innerHTML = h;
 }
 $('v-today').addEventListener('click', function (e) {
@@ -761,7 +763,7 @@ $('v-today').addEventListener('click', function (e) {
   const rf = e.target.closest('[data-act="refresh"]');
   if (rf) {
     rf.disabled = true; toast('重新讀取試算表…', 1500);
-    call('refresh', {}).then(function (r) { clearCaches(); S.form = r.form; S.dash = r.dashboard; lsSet('kakeiboLast', { form: r.form, dash: r.dashboard }); renderToday(); renderEntry(); toast('已更新'); prefetch(); }).catch(err);
+    call('refresh', {}).then(function (r) { checkBackend(r.backend); clearCaches(); S.form = r.form; S.dash = r.dashboard; lsSet('kakeiboLast', { form: r.form, dash: r.dashboard }); renderToday(); renderEntry(); toast('已更新'); prefetch(); }).catch(err);
     return;
   }
   const al = e.target.closest('[data-act="allocdone"],[data-act="allocundo"]');
@@ -2053,6 +2055,19 @@ function closeModal() { $('modal').style.display = 'none'; $('modalBox').onclick
 $('modal').addEventListener('click', function (e) { if (e.target.id === 'modal') closeModal(); });
 
 // ---------- 啟動 ----------
+// 後端版本檢查：手機連到的 Apps Script 比這個前端需要的舊，就顯示提醒（不擋操作）
+function checkBackend(v) {
+  S.backend = v || '';
+  const old = !v || v < NEED_BACKEND, bar = $('backendBar');
+  if (!old) { if (bar) bar.remove(); return; }
+  if (bar) return;
+  const b = document.createElement('div');
+  b.id = 'backendBar';
+  b.style.cssText = 'position:fixed;left:12px;right:12px;top:calc(12px + env(safe-area-inset-top));background:#FFF4D6;color:#7A4B00;border:2px solid #C77700;border-radius:14px;padding:10px 12px;display:flex;align-items:center;gap:10px;z-index:19;font-size:13px;line-height:1.5';
+  b.innerHTML = '<span style="flex:1"><b>後端還沒部署新版本</b><br>Apps Script 目前是 ' + esc(v || '舊版（沒有版本號）') + '，這個 App 需要 ' + NEED_BACKEND + ' 以上。請到 Apps Script 貼上最新程式並「部署 → 新版本」，否則有些修正不會生效。</span><button aria-label="關閉" style="height:36px;min-width:36px;border-radius:18px;border:1px solid #C77700;background:transparent;color:#7A4B00;font-size:16px">✕</button>';
+  b.querySelector('button').onclick = function () { b.remove(); };
+  document.body.appendChild(b);
+}
 function checkUpdate() {
   fetch('./?check=' + Date.now(), { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (t) {
     const m = t.match(/APP_VERSION = '([^']+)'/);
@@ -2074,6 +2089,7 @@ else (function boot() {
   const applyForm = function (f) { S.form = f; if (!S.e.date || S.e.date < f.today) S.e.date = f.today; if (!S.e.item) S.e.item = (f.items[S.e.cat] || [])[0] || S.e.cat; };
   if (last && last.form && last.dash) { S.offline = true; applyForm(last.form); S.e.date = last.form.today; S.dash = last.dash; renderEntry(); show(startView); }
   call('init', {}).then(function (r) {
+    checkBackend(r.backend);
     S.offline = false; applyForm(r.form); S.e.date = r.form.today; S.dash = r.dashboard; S.dashStale = false;
     lsSet('kakeiboLast', { form: r.form, dash: r.dashboard });
     renderEntry();

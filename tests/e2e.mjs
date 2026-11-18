@@ -40,7 +40,7 @@ try {
   await ctx.addInitScript(u => { try { if (!localStorage.getItem('kakeiboCfg')) localStorage.setItem('kakeiboCfg', JSON.stringify({ url: u, k: 'test-token' })); } catch (e) {} }, GAS_URL);
   const page = await ctx.newPage();
   const consoleErrors = [], external = [], calls = [];
-  let offline = false, dropResponse = false;
+  let offline = false, dropResponse = false, oldBackend = false;
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) consoleErrors.push(m.text()); });
   page.on('pageerror', e => consoleErrors.push('pageerror: ' + e.message));
   page.on('dialog', d => d.accept());
@@ -55,7 +55,9 @@ try {
       g.nextRequest();
       const out = g.call('doPost', { postData: { contents: body } });
       if (dropResponse) return route.abort('timedout');   // 試算表已寫入，但回應在路上遺失
-      return route.fulfill({ status: 200, contentType: 'application/json', body: out.text });
+      let text = out.text;
+      if (oldBackend) { const j = JSON.parse(text); if (j.data) delete j.data.backend; text = JSON.stringify(j); }   // 模擬沒部署新版的舊後端
+      return route.fulfill({ status: 200, contentType: 'application/json', body: text });
     }
     external.push(url); return route.abort();
   });
@@ -216,6 +218,32 @@ try {
     await toastHas(/發生錯誤：科目錯誤/);
     assert.equal(ledgerCount(), before);
     assert.equal(await page.locator('#v-entry .qbar').count(), 0);
+  });
+
+  await step('版本：後端是新版時不顯示提醒，今日頁底部顯示前後端版本', async () => {
+    assert.equal(await page.locator('#backendBar').count(), 0);
+    await page.click('nav [data-view="today"]');
+    const v = g.get('BACKEND_VERSION');
+    await page.waitForFunction(t => document.getElementById('v-today').innerText.indexOf('後端版本 ' + t) >= 0, v);
+  });
+
+  await step('版本：手機連到沒部署新版的舊後端 → 顯示提醒，可以關閉，不影響記帳', async () => {
+    oldBackend = true;
+    await page.reload();
+    const bar = page.locator('#backendBar');
+    await bar.waitFor();
+    assert.match(await bar.innerText(), /後端還沒部署新版本/);
+    await shot('11-後端版本提醒');
+    await bar.locator('button').click();
+    assert.equal(await page.locator('#backendBar').count(), 0);
+    const before = ledgerCount();
+    await page.click('nav [data-view="entry"]');
+    await page.click('#v-entry [data-act="pay"][data-v="現金"]');
+    for (const k of ['3', '0']) await page.click('#v-entry [data-act="key"][data-v="' + k + '"]');
+    await page.click('#v-entry .submit');
+    await toastHas(/已記錄/);
+    assert.equal(ledgerCount(), before + 1);
+    oldBackend = false;
   });
 
   await step('沒有任何對外連線、console 沒有錯誤', async () => {
