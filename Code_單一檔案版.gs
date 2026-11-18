@@ -166,6 +166,38 @@ function handleShortcut_(p) {
 function api(k, method, args) {
   checkToken_(k);
   args = args || {};
+  if (args.rid && RID_METHODS[method]) return onceByRid_(String(args.rid).slice(0, 24), method, args);   // 限長：200 個編號要放得進一個設定值（9KB）
+  return route_(method, args);
+}
+// ---- 防止重送重複記帳：前端每筆記帳／繳費都帶一個請求編號 rid ----
+// 情境：試算表已經寫入，但手機沒收到回應（逾時），App 放進離線佇列再送一次。
+// 同一個 rid 第二次送來時直接略過，不再寫入。最近 200 個 rid 存在 Script Properties。
+const RID_METHODS = { add: true, payPrepaid: true };
+const RID_KEEP = 200;
+function ridMap_() { try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('RIDS') || '{}'); } catch (e) { return {}; } }
+function ridSave_(map) {
+  const keys = Object.keys(map).sort(function (a, b) { return map[a] - map[b]; });
+  keys.slice(0, Math.max(0, keys.length - RID_KEEP)).forEach(function (x) { delete map[x]; });
+  PropertiesService.getScriptProperties().setProperty('RIDS', JSON.stringify(map));
+}
+function onceByRid_(rid, method, args) {
+  const lock = LockService.getScriptLock(); lock.waitLock(10000);
+  try {
+    const map = ridMap_();
+    if (map[rid]) {
+      const d = parseDate_(String(args.date || todayStr_()).slice(0, 10));
+      return { ok: true, duplicate: true, message: '這筆已經記過了，重送的請求已略過', left: safe_(function () { return readTop_(d.y, d.m).left; }) };
+    }
+    map[rid] = Date.now(); ridSave_(map);            // 先占位，避免原本的請求還在跑時重送又進來
+  } finally { lock.releaseLock(); }
+  try { return route_(method, args); }
+  catch (e) {                                          // 沒寫成功：放掉 rid，之後可以重送
+    const lock2 = LockService.getScriptLock(); lock2.waitLock(10000);
+    try { const map = ridMap_(); delete map[rid]; ridSave_(map); } finally { lock2.releaseLock(); }
+    throw e;
+  }
+}
+function route_(method, args) {
   switch (method) {
     case 'form': return getFormData_();
     case 'init': return { form: getFormData_(), dashboard: getDashboard_(todayStr_()) };
@@ -230,8 +262,11 @@ function parseDate_(s) { const a = String(s).split('-'); return { y: +a[0], m: +
 function daysIn_(y, m) { return new Date(y, m, 0).getDate(); }
 function num_(v) { const n = Number(v); return isFinite(n) ? n : 0; }
 function fmt_(n) { return Math.round(num_(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+function isTopup_(r) { return r.cat === ECARD_TOPUP_CAT; }   // 一卡通儲值＝轉帳，不是花費
 function catFull_(c) { return c === '國旅' ? TRAVEL_FULL : c; }
 function catShort_(c) { return c === TRAVEL_FULL ? '國旅' : c; }
+// 前端的付款方式 → 寫進試算表的名稱（新增與編輯共用）
+function payFull_(p, cat) { return p === ECARD_PAY ? ECARD_PAY : ((p === '信用卡' || p === CONFIG.cardLabel || cat === ECARD_TOPUP_CAT) ? CONFIG.cardLabel : '現金'); }
 function payShort_(p) { return p === '現金' ? '現金' : (p === ECARD_PAY ? ECARD_PAY : '信用卡'); }
 function prevMonth_(y, m) { return m === 1 ? { y: y - 1, m: 12 } : { y: y, m: m - 1 }; }
 function nextMonth_(y, m) { return m === 12 ? { y: y + 1, m: 1 } : { y: y, m: m + 1 }; }
@@ -325,7 +360,7 @@ function dailyCum_(y, m, cat) {
   if (!rows) return null;
   const days = daysIn_(y, m), daily = new Array(days + 1).fill(0);
   rows.forEach(function (r) {
-    if (r.cat === '國旅' || (cat && r.cat !== cat)) return;
+    if (r.cat === '國旅' || isTopup_(r) || (cat && r.cat !== cat)) return;
     const d = parseInt(String(r.date).slice(8, 10), 10);
     if (d >= 1 && d <= days) daily[d] += r.amount;
   });
@@ -425,7 +460,7 @@ function getFormData_() {
   [[pm.y, pm.m], [t.y, t.m]].forEach(function (ym) {
     if (!ss_(ym[0])) return;
     readLedger_(ym[0], ym[1]).forEach(function (r) {
-      if (!r.item || r.item === '舊帳轉入' || r.note.indexOf('帳單補登') >= 0 || r.cat === '國旅') return;
+      if (!r.item || r.item === '舊帳轉入' || r.note.indexOf('帳單補登') >= 0 || r.cat === '國旅' || isTopup_(r)) return;
       const k = [r.cat, r.item, r.pay, r.amount].join('|'); combo[k] = (combo[k] || 0) + 1;
       if (!last || r.date > last.date || (r.date === last.date && r.row > last.row)) last = r;
     });
@@ -445,7 +480,7 @@ function addEntry_(a) {
   if (!amt) throw new Error('請輸入金額');
   if (CATS.concat(['國旅', ECARD_TOPUP_CAT]).indexOf(cat) < 0) throw new Error('科目錯誤：' + cat);
   const d = parseDate_(date);
-  const pay = a.pay === ECARD_PAY ? ECARD_PAY : ((a.pay === '信用卡' || a.pay === CONFIG.cardLabel || cat === ECARD_TOPUP_CAT) ? CONFIG.cardLabel : '現金');
+  const pay = payFull_(a.pay, cat);
   if (pay === ECARD_PAY || cat === ECARD_TOPUP_CAT) ensureSchema2_(d.y);
   let topups = 0, balBefore = null;
   if (pay === ECARD_PAY && !a.noTopup) {
@@ -491,9 +526,10 @@ function updateEntry_(a) {
   const d = parseDate_(a.date);
   if (d.y !== +a.y || d.m !== +a.m) {           // 換到別的月份：刪掉原本、新增到新月份
     deleteEntry_(a);
-    return addEntry_(a);
+    return addEntry_(Object.assign({}, a, { noTopup: true }));   // 只是搬月份，不再自動加值
   }
-  const pay = a.pay === '信用卡' ? CONFIG.cardLabel : '現金';
+  const pay = payFull_(a.pay, a.cat);
+  if (pay === ECARD_PAY || a.cat === ECARD_TOPUP_CAT) ensureSchema2_(d.y);
   sh.getRange(row, 11, 1, 4).setValues([[a.date, catFull_(a.cat), a.item, Math.round(num_(a.amount))]]);
   sh.getRange(row, 16, 1, 2).setValues([[pay, a.note || '']]);
   bumpVer_();
@@ -540,7 +576,7 @@ function getDashboard_(todayS) {
   const todayRows = ledger.filter(function (r) { return r.date === todayS; });
   const todayCount = todayRows.length;
   const todayBy = {}; let todayAll = 0;
-  todayRows.forEach(function (r) { todayBy[r.cat] = (todayBy[r.cat] || 0) + r.amount; if (r.cat !== '國旅') todayAll += r.amount; });
+  todayRows.forEach(function (r) { if (isTopup_(r)) return; todayBy[r.cat] = (todayBy[r.cat] || 0) + r.amount; if (r.cat !== '國旅') todayAll += r.amount; });
   const dl = Math.max(1, time.daysLeft);
   const dayAllowance = Math.max(0, Math.round((top.budget - (top.spent - todayAll)) / dl));
   const tips = [];
@@ -711,7 +747,7 @@ function monthExtra_(y, m, cutoff) {
   const rows = readLedger_(y, m), days = daysIn_(y, m);
   const cash = new Array(days).fill(0), card = new Array(days).fill(0), items = {};
   rows.forEach(function (r) {
-    if (r.cat === '國旅') return;
+    if (r.cat === '國旅' || isTopup_(r)) return;
     const d = parseInt(String(r.date).slice(8, 10), 10);
     if (d < 1 || d > days) return;
     if (r.pay === '現金') cash[d - 1] += r.amount; else card[d - 1] += r.amount;
@@ -804,7 +840,7 @@ function itemTotals_(y, m) {
   return safe_(function () {
     if (!ss_(y)) return null;
     const o = {};
-    readLedger_(y, m).forEach(function (r) { if (r.item) o[r.item] = (o[r.item] || 0) + r.amount; });
+    readLedger_(y, m).forEach(function (r) { if (r.item && !isTopup_(r)) o[r.item] = (o[r.item] || 0) + r.amount; });
     return o;
   });
 }
@@ -820,7 +856,7 @@ function weekdayAvg_(y, m, cutoff) {
       any = true;
       for (let d = 1; d <= lim; d++) occ[new Date(cur.y, cur.m - 1, d).getDay()]++;
       lr.forEach(function (r) {
-        if (r.cat === '奉獻' || r.cat === '國旅') return;
+        if (r.cat === '奉獻' || r.cat === '國旅' || isTopup_(r)) return;
         const d = parseInt(String(r.date).slice(8, 10), 10);
         if (d >= 1 && d <= lim) sum[new Date(cur.y, cur.m - 1, d).getDay()] += r.amount;
       });
@@ -1031,14 +1067,41 @@ function deleteLog_(y, row) {
   const sh = logSheet_(+y); row = +row;
   if (row < 2 || row > sh.getLastRow()) throw new Error('紀錄不存在');
   const r = readLog_(+y).filter(function (x) { return x.row === row; })[0];
-  if (r && r.type === '繳費' && r.data) {   // 還原攤平表
-    const d = JSON.parse(r.data), sh2 = ss_(+y).getSheetByName(d.sheet);
-    restoreCell_(sh2, d.row, d.colM, d.prevM);
-    if (d.colMM && d.colMM !== d.colM) restoreCell_(sh2, d.row, d.colMM, d.prevMM);
-  }
+  if (r && r.type === '繳費' && r.data) replayPrepaid_(+y, sh, r);   // 還原攤平表
   sh.deleteRow(row);
   bumpVer_();
   return { ok: true, message: '已刪除紀錄' };
+}
+// 刪除一筆繳費後，重算這個項目在攤平表上被 App 動過的格子。
+// 每一格的「原始狀態」存在第一筆動到它的紀錄裡（prevM／prevMM）；
+// 把剩下的紀錄依原本順序重放一次（和 recordPrepaid_ 寫入的規則相同），
+// 就不會因為刪除順序不同而留下錯的數字。原始狀態也會交給新的第一筆紀錄保存。
+function replayPrepaid_(y, logSh, del) {
+  const all = readLog_(y).filter(function (x) { return x.type === '繳費' && x.target === del.target && x.data; })
+    .map(function (x) { return { row: x.row, m: x.m, amount: x.amount, d: JSON.parse(x.data) }; });
+  const d0 = all.filter(function (x) { return x.row === del.row; })[0].d;
+  const orig = {};       // 欄號 → 原始狀態
+  all.forEach(function (x) {
+    if (!(x.d.colM in orig)) orig[x.d.colM] = x.d.prevM;
+    if (x.d.colMM && x.d.colMM !== x.d.colM && !(x.d.colMM in orig)) orig[x.d.colMM] = x.d.prevMM;
+  });
+  const rest = all.filter(function (x) { return x.row !== del.row; });
+  const state = {}, sumByM = {}, owner = {};   // owner：剩下的紀錄中，第一筆動到某欄的是哪一筆
+  rest.forEach(function (x) {
+    if (x.d.colMM && x.d.colMM !== x.d.colM) { if (!(x.d.colMM in owner)) owner[x.d.colMM] = { x: x, key: 'prevMM' }; state[x.d.colMM] = { v: 0 }; }
+    if (!(x.d.colM in owner)) owner[x.d.colM] = { x: x, key: 'prevM' };
+    sumByM[x.m] = (sumByM[x.m] || 0) + x.amount;
+    state[x.d.colM] = { v: sumByM[x.m] };
+  });
+  const sh2 = ss_(y).getSheetByName(d0.sheet);
+  Object.keys(orig).forEach(function (col) { restoreCell_(sh2, d0.row, +col, col in state ? state[col] : orig[col]); });
+  // 原始狀態改由新的第一筆紀錄保存
+  Object.keys(owner).forEach(function (col) {
+    const o = owner[col];
+    if (JSON.stringify(o.x.d[o.key]) === JSON.stringify(orig[col])) return;
+    o.x.d[o.key] = orig[col];
+    logSh.getRange(o.x.row, LOG_HEAD.length).setValue(JSON.stringify(o.x.d));
+  });
 }
 function restoreCell_(sh, row, col, prev) {
   const r = sh.getRange(row, col);
@@ -1723,7 +1786,7 @@ function repayBorrow_(a) {
 function getRecords_(y, m) {
   y = +y; m = +m;
   const rows = readLedger_(y, m).sort(function (a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : b.row - a.row); });
-  const total = rows.reduce(function (s, r) { return s + r.amount; }, 0);
+  const total = rows.reduce(function (s, r) { return isTopup_(r) ? s : s + r.amount; }, 0);   // 一卡通儲值列出但不算進合計
   return { y: y, m: m, rows: rows, total: total, capacity: CONFIG.ledgerLast - CONFIG.ledgerFirst + 1 };
 }
 

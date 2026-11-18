@@ -40,7 +40,7 @@ try {
   await ctx.addInitScript(u => { try { if (!localStorage.getItem('kakeiboCfg')) localStorage.setItem('kakeiboCfg', JSON.stringify({ url: u, k: 'test-token' })); } catch (e) {} }, GAS_URL);
   const page = await ctx.newPage();
   const consoleErrors = [], external = [], calls = [];
-  let offline = false;
+  let offline = false, dropResponse = false;
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) consoleErrors.push(m.text()); });
   page.on('pageerror', e => consoleErrors.push('pageerror: ' + e.message));
   page.on('dialog', d => d.accept());
@@ -54,6 +54,7 @@ try {
       calls.push({ method: parsed.method, args: parsed.args });
       g.nextRequest();
       const out = g.call('doPost', { postData: { contents: body } });
+      if (dropResponse) return route.abort('timedout');   // 試算表已寫入，但回應在路上遺失
       return route.fulfill({ status: 200, contentType: 'application/json', body: out.text });
     }
     external.push(url); return route.abort();
@@ -158,6 +159,37 @@ try {
     await toastHas(/離線記帳已全部上傳/);
     assert.equal(ledgerCount(), before + 1);
     assert.equal(await page.locator('#v-entry .qbar').count(), 0);
+  });
+
+  await step('回應遺失：試算表已寫入、手機以為失敗而暫存，重送後仍只記一筆', async () => {
+    const before = ledgerCount();
+    dropResponse = true;
+    for (const k of ['6', '6']) await page.click('#v-entry [data-act="key"][data-v="' + k + '"]');
+    await page.click('#v-entry .submit');
+    await toastHas(/目前離線，已暫存/);
+    assert.equal(ledgerCount(), before + 1, '第一次其實已經寫入');
+    const rid = lastCall('add').args.rid;
+    assert.ok(rid, '記帳請求要帶請求編號');
+    dropResponse = false;
+    await page.click('#v-entry [data-act="flush"]');
+    await toastHas(/離線記帳已全部上傳/);
+    const resent = calls.filter(c => c.method === 'add' && c.args && c.args.rid === rid);
+    assert.equal(resent.length, 2, '同一個編號送了兩次');
+    assert.equal(ledgerCount(), before + 1, '重送後不應多一筆');
+  });
+
+  await step('紀錄頁：編輯一卡通儲值後按儲存，科目與付款方式不變', async () => {
+    await page.click('nav [data-view="records"]');
+    const row = page.locator('#v-records button.li', { hasText: '一卡通自動加值' }).first();
+    await row.waitFor();
+    const r = +(await row.getAttribute('data-row')), sh = g.book(2026).getSheetByName('2026年11月');
+    const before = [sh.val(r, 12), sh.val(r, 16)];
+    await row.click();
+    assert.equal(await page.inputValue('#edCat'), '一卡通儲值');
+    await page.click('[data-ed="save"]');
+    await toastHas(/已更新/);
+    assert.deepEqual([sh.val(r, 12), sh.val(r, 16)], before);
+    await page.click('nav [data-view="entry"]');
   });
 
   await step('後端回錯誤時，畫面顯示錯誤訊息、不暫存', async () => {

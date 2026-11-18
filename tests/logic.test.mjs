@@ -168,6 +168,19 @@ test('一卡通：儲值不能算進今日看板的「今天已花」', () => {
   }
 });
 
+test('一卡通：儲值不能算進紀錄頁的本月合計、圖表的每日花費與項目排行', () => {
+  for (let i = 0; i < RUNS; i++) {
+    const R = rng(1900 + i), { g, wb } = fresh(1900 + i);
+    g.call('addEntry_', { date: '2026-11-' + pad(R.int(1, 18)), cat: R.pick(CATS), item: '捷運', amount: R.int(1, 2500), pay: '一卡通' });
+    g.nextRequest();
+    const rows = ledgerRows(wb.month(11)), want = rows.filter(r => r.cat !== TOPUP).reduce((s, r) => s + r.amt, 0);
+    assert.equal(g.call('getRecords_', 2026, 11).total, want);
+    const ex = g.call('monthExtra_', 2026, 11, 18), daily = ex.daily.cash.concat(ex.daily.card).reduce((a, b) => a + b, 0);
+    assert.equal(daily, rows.filter(r => r.cat !== TOPUP && r.cat !== TRAVEL_FULL).reduce((s, r) => s + r.amt, 0));
+    assert.ok(!ex.items.some(x => x.item === '一卡通自動加值'));
+  }
+});
+
 // ---------------------------------------------------------------- 預算調撥
 test('調撥：總預算不變；各科目＝原預算＋調入−調出；全部刪除後還原', () => {
   for (let i = 0; i < RUNS; i++) {
@@ -223,17 +236,43 @@ test('預扣繳費：記一筆再刪除，攤平表回到原本的值或公式',
   }
 });
 
-test('預扣繳費：同一項目記兩筆，不論先刪哪一筆，全部刪完都要回到原狀', () => {
+test('預扣繳費：同一項目記多筆（可跨月），不論刪除順序，攤平表都等於「只記剩下那幾筆」的結果', () => {
+  const stats = { plain: 0, moved: 0 };
   for (let i = 0; i < RUNS; i++) {
-    const R = rng(3100 + i), { g, wb } = fresh(3100 + i), { key, row } = setupPrepaid(R, g, wb);
-    const before = rowSnap(wb.tw, row), m = R.int(1, 12), date = '2026-' + pad(m) + '-10';
-    g.call('recordPrepaid_', { key, amount: R.int(1, 30000), date });
-    g.call('recordPrepaid_', { key, amount: R.int(1, 30000), date });
-    let log;
-    const order = R.bool() ? 'first' : 'last';
-    while ((log = g.call('readLog_', 2026).filter(r => r.type === '繳費')).length) g.call('deleteLog_', 2026, (order === 'first' ? log[0] : log[log.length - 1]).row);
-    assert.equal(rowSnap(wb.tw, row), before, '刪除順序：' + (order === 'first' ? '先刪第一筆' : '先刪最後一筆'));
+    const R = rng(3100 + i), seed = 3100 + i;
+    const pays = Array.from({ length: R.int(2, 4) }, () => ({ amount: R.int(1, 30000), date: '2026-' + pad(R.pick([11, 12, R.int(1, 12)])) + '-' + pad(R.int(1, 28)) }));
+    const { g, wb } = fresh(seed), { key, row } = setupPrepaid(rng(seed), g, wb);
+    const before = rowSnap(wb.tw, row);
+    pays.forEach(p => { g.nextRequest(); g.call('recordPrepaid_', { key, ...p }); });
+    g.nextRequest();
+    const moved = g.call('readLog_', 2026).some(r => r.type === '繳費' && JSON.parse(r.data).mm !== r.m);
+    const alive = pays.map(() => true);
+    let anyMoved = moved;
+    while (alive.some(Boolean)) {
+      g.nextRequest();
+      const log = g.call('readLog_', 2026).filter(r => r.type === '繳費'), k = R.int(0, log.length - 1);
+      g.call('deleteLog_', 2026, log[k].row);
+      alive[alive.map((a, j) => a ? j : -1).filter(j => j >= 0)[k]] = false;
+      // 標準答案：在全新的試算表上，只記還留著的那幾筆
+      const ref = fresh(seed), refKey = setupPrepaid(rng(seed), ref.g, ref.wb).key;
+      pays.forEach((p, j) => { if (alive[j]) { ref.g.nextRequest(); ref.g.call('recordPrepaid_', { key: refKey, ...p }); } });
+      ref.g.nextRequest();
+      const refMoved = ref.g.call('readLog_', 2026).some(r => r.type === '繳費' && JSON.parse(r.data).mm !== r.m);
+      if (refMoved) anyMoved = true;
+      if (!moved && !refMoved) {
+        assert.equal(rowSnap(wb.tw, row), rowSnap(ref.wb.tw, row), '剩下 ' + alive.filter(Boolean).length + ' 筆時不一致');
+      } else {
+        // 有「挪用別月計畫」時，保留每筆當初的挪用決定；至少：剩下的紀錄沒動到的格子要是原值
+        const touched = new Set(); g.nextRequest();
+        g.call('readLog_', 2026).filter(r => r.type === '繳費').forEach(r => { const d = JSON.parse(r.data); touched.add(d.colM - 2); touched.add(d.colMM - 2); });
+        const now = JSON.parse(rowSnap(wb.tw, row)), orig = JSON.parse(before);
+        now.forEach((c, k) => { if (!touched.has(k)) assert.deepEqual(c, orig[k], (k + 1) + ' 月沒有紀錄卻沒還原'); });
+      }
+    }
+    assert.equal(rowSnap(wb.tw, row), before);
+    anyMoved ? stats.moved++ : stats.plain++;
   }
+  assert.ok(stats.plain >= 100 && stats.moved >= 20, '兩種情況都要測到夠多次：' + JSON.stringify(stats));
 });
 
 // ---------------------------------------------------------------- 預扣信封：調用與歸還
@@ -273,17 +312,45 @@ test('信封調用：超過可安全調用金額、0 元會被擋下', () => {
 });
 
 // ---------------------------------------------------------------- 冪等（離線佇列重送、逾時重試）
+// 前端每筆記帳／繳費都帶請求編號 rid（index.html newRid），重送時沿用同一個
 test('冪等：同一筆記帳送兩次（離線佇列重送），只能記成一筆', () => {
-  const { g, wb } = fresh(5), args = { date: '2026-11-18', cat: '食物', item: '午餐', amount: 120, pay: '現金', note: '' };
+  const { g, wb } = fresh(5), args = { date: '2026-11-18', cat: '食物', item: '午餐', amount: 120, pay: '現金', note: '', rid: 'r-add-1' };
   const n0 = ledgerRows(wb.month(11)).length;
   g.call('api', 't', 'add', { ...args }); g.nextRequest(); g.call('api', 't', 'add', { ...args });
   assert.equal(ledgerRows(wb.month(11)).length, n0 + 1);
 });
 
 test('冪等：同一筆預扣繳費送兩次，只能記成一筆', () => {
-  const { g } = fresh(6), key = '台銀:11', args = { key, amount: 4700, date: '2026-11-18', note: '' };
+  const { g } = fresh(6), key = '台銀:11', args = { key, amount: 4700, date: '2026-11-18', note: '', rid: 'r-pay-1' };
   g.call('api', 't', 'payPrepaid', { ...args }); g.nextRequest(); g.call('api', 't', 'payPrepaid', { ...args });
   assert.equal(g.call('readLog_', 2026).filter(r => r.type === '繳費').length, 1);
+});
+
+test('冪等：不同請求編號的相同內容（真的買了兩次）要照常記兩筆；重送的次數再多也只算一次', () => {
+  for (let i = 0; i < RUNS; i++) {
+    const R = rng(4100 + i), { g, wb } = fresh(4100 + i), n0 = ledgerRows(wb.month(11)).length;
+    const args = { date: '2026-11-18', cat: '食物', item: '午餐', amount: R.int(1, 500), pay: R.pick(['現金', '信用卡']), note: '' };
+    const rids = Array.from({ length: R.int(1, 4) }, (_, k) => 'r' + i + '-' + k);
+    let sends = 0;
+    rids.forEach(rid => { for (let t = 0, n = R.int(1, 3); t < n; t++) { g.nextRequest(); g.call('api', 't', 'add', { ...args, rid }); sends++; } });
+    assert.equal(ledgerRows(wb.month(11)).length, n0 + rids.length, '送了 ' + sends + ' 次、' + rids.length + ' 個編號');
+  }
+});
+
+test('冪等：寫入失敗的請求不占用編號，修好後可以用同一個編號重送', () => {
+  const { g, wb } = fresh(10), n0 = ledgerRows(wb.month(11)).length;
+  const bad = { date: '2026-11-18', cat: '零用錢', item: 'x', amount: 50, pay: '現金', rid: 'r-x' };
+  assert.throws(() => g.call('api', 't', 'add', bad));
+  g.nextRequest(); g.call('api', 't', 'add', { ...bad, cat: '食物' });
+  assert.equal(ledgerRows(wb.month(11)).length, n0 + 1);
+});
+
+test('冪等：請求編號只保留最近 200 個，不會讓設定無限長大', () => {
+  const { g } = fresh(11);
+  for (let k = 0; k < 230; k++) { g.nextRequest(); g.call('api', 't', 'setEcard', { balance: 1 }); g.call('onceByRid_', 'k' + k, 'setEcard', { balance: 1 }); }
+  const map = JSON.parse(g.props.get('RIDS'));
+  assert.equal(Object.keys(map).length, 200);
+  assert.ok(map.k229 && !map.k0);
 });
 
 test('冪等：同一筆歸還按兩次，第二次會被擋下', () => {

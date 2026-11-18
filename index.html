@@ -209,7 +209,7 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.17-1721';
+const APP_VERSION = '2026.11.18-1600';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -595,6 +595,7 @@ document.addEventListener('keydown', function (e) {
 });
 // ---- 離線暫存 ----
 S.queue = lsGet('kakeiboQueue') || [];
+function newRid() { return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10); }   // 請求編號：重送時後端用來辨認同一筆
 function isNetErr(e) { const m = String(e && e.message ? e.message : e); return (typeof navigator !== 'undefined' && navigator.onLine === false) || /network|fetch|load failed|連線失敗|Failed|timed? ?out/i.test(m); }
 function flushQueue(manual) {
   if (!S.queue.length || S.flushing) return;
@@ -634,7 +635,7 @@ function submitEntry() {
   if (E.pay === '預扣') {
     if (!E.ppKey) return toast('請先選擇預扣項目');
     btn.disabled = true; btn.textContent = '記錄中…';
-    const args = { key: E.ppKey, amount: amt, date: E.date, note: E.note || '' };
+    const args = { key: E.ppKey, amount: amt, date: E.date, note: E.note || '', rid: newRid() };
     call('payPrepaid', args).then(function (r) { toast(r.message, 3600); E.amt = ''; E.note = ''; E.ppTouched = false; afterWrite(); renderEntry(); })
       .catch(function (e) {
         if (isNetErr(e)) { S.queue.push({ method: 'payPrepaid', args: args, t: Date.now() }); lsSet('kakeiboQueue', S.queue); toast('目前離線，已暫存，連線後自動上傳', 3000); E.amt = ''; E.note = ''; }
@@ -647,7 +648,7 @@ function submitEntry() {
   if (E.custom && !item) return toast('請輸入消費項目');
   btn.disabled = true; btn.textContent = '記錄中…';
   const exprNote = hasOp(E.amt) ? '〔' + E.amt.replace(/−/g, '-') + '〕' : '';
-  const args = { date: E.date, cat: E.cat, item: item, amount: amt, pay: E.pay, note: ((E.note || '') + (E.note && exprNote ? ' ' : '') + exprNote) };
+  const args = { date: E.date, cat: E.cat, item: item, amount: amt, pay: E.pay, note: ((E.note || '') + (E.note && exprNote ? ' ' : '') + exprNote), rid: newRid() };
   const applyLocal = function () {
     if (!S.dash) return;
     const sm = +E.date.slice(0, 4) === S.dash.y && +E.date.slice(5, 7) === S.dash.m;
@@ -658,7 +659,7 @@ function submitEntry() {
   };
   call('add', args).then(function (r) {
     toast(r.message + (r.warnFull ? '（本月已接近 500 筆上限）' : ''), 3200);
-    applyLocal(); if (S.dash) { S.dash.left = r.left; if (r.ecard !== undefined) S.dash.ecard = r.ecard; }
+    applyLocal(); if (S.dash) { if (r.left != null) S.dash.left = r.left; if (r.ecard !== undefined) S.dash.ecard = r.ecard; }
     S.form.last = { cat: E.cat, item: item, pay: E.pay, amount: amt };
     E.amt = ''; E.note = ''; E.custom = false; E.customText = '';
     renderEntry(); afterWrite();
@@ -1263,7 +1264,7 @@ function renderRecords() {
   const groups = {};
   rows.forEach(function (r) { (groups[r.date] = groups[r.date] || []).push(r); });
   Object.keys(groups).sort().reverse().forEach(function (day) {
-    const sum = groups[day].reduce(function (s, r) { return s + r.amount; }, 0);
+    const sum = groups[day].reduce(function (s, r) { return r.cat === '一卡通儲值' ? s : s + r.amount; }, 0);   // 儲值只是轉帳
     h += '<div class="sub" style="font-size:12px;font-weight:500;margin:4px 0 6px">' + md(day) + '（' + wk(day) + '）　$' + fmt(sum) + '</div><div class="list">' +
       groups[day].map(function (r) {
         return '<button class="li" data-act="edit" data-row="' + r.row + '" style="width:100%;border-left:none;border-right:none;border-top:none;background:var(--card);text-align:left"><div class="col" style="flex:1;gap:1px"><span style="font-size:15px;font-weight:500">' + esc(r.item) + '</span><span class="sub" style="font-size:12px">' + esc(r.cat) + '・' + r.pay + (r.note ? '・' + esc(r.note) : '') + '</span></div><span class="' + (r.pay === '現金' ? 'amt-c' : (r.pay === '一卡通' ? 'amt-e' : 'amt-k')) + '">$' + fmt(r.amount) + '</span></button>';
@@ -1285,7 +1286,7 @@ $('v-records').addEventListener('click', function (e) {
   if (a === 'edit') openEdit(S.rec.rows.filter(function (r) { return r.row === +b.dataset.row; })[0]);
 });
 function openEdit(r) {
-  const cats = ['奉獻', '食物', '教育', '油料', '娛樂', '其他', '國旅'];
+  const cats = ['奉獻', '食物', '教育', '油料', '娛樂', '其他', '國旅'].concat(r.cat === '一卡通儲值' ? ['一卡通儲值'] : []);
   openModal('<b style="font-size:16px">編輯紀錄</b>' +
     '<label class="sub">日期<input type="date" class="f" id="edDate" value="' + r.date + '"></label>' +
     '<label class="sub">科目<select class="f" id="edCat">' + cats.map(function (c) { return '<option ' + (c === r.cat ? 'selected' : '') + '>' + c + '</option>'; }).join('') + '</select></label>' +
