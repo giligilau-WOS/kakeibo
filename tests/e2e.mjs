@@ -178,6 +178,22 @@ try {
     assert.equal(ledgerCount(), before + 1, '重送後不應多一筆');
   });
 
+  await step('紀錄頁：把一筆現金消費改成一卡通 → 試算表與畫面都是一卡通', async () => {
+    await page.click('nav [data-view="records"]');
+    const row = page.locator('#v-records button.li', { hasText: '現金' }).first();
+    await row.waitFor();
+    const r = +(await row.getAttribute('data-row')), sh = g.book(2026).getSheetByName('2026年11月');
+    assert.equal(sh.val(r, 16), '現金');
+    await row.click();
+    await page.selectOption('#edPay', '一卡通');
+    await page.click('[data-ed="save"]');
+    await toastHas(/已更新/);
+    assert.equal(lastCall('update').args.pay, '一卡通', '前端送出的付款方式');
+    assert.equal(sh.val(r, 16), '一卡通', '試算表存的付款方式');
+    await page.waitForFunction(rr => { const b = document.querySelector('#v-records button.li[data-row="' + rr + '"]'); return b && /・一卡通/.test(b.innerText); }, r);
+    await shot('10-紀錄頁改成一卡通');
+  });
+
   await step('紀錄頁：編輯一卡通儲值後按儲存，科目與付款方式不變', async () => {
     await page.click('nav [data-view="records"]');
     const row = page.locator('#v-records button.li', { hasText: '一卡通自動加值' }).first();

@@ -113,6 +113,24 @@ test('記帳：在紀錄頁編輯但不改任何欄位，試算表不應該變�
   }
 });
 
+test('記帳：在紀錄頁把付款方式改成另一種（例如現金→一卡通），試算表存的就是新的付款方式', () => {
+  const want = { '現金': '現金', '信用卡': '聯邦信用卡', '一卡通': '一卡通' };
+  for (let i = 0; i < RUNS; i++) {
+    const R = rng(4600 + i), { g, wb } = fresh(4600 + i), sh = wb.month(11);
+    const from = R.pick(['現金', '信用卡', '一卡通']), to = R.pick(['現金', '信用卡', '一卡通']);
+    const res = g.call('addEntry_', { date: '2026-11-' + pad(R.int(1, 18)), cat: R.pick(CATS), item: '早餐', amount: R.int(1, 400), pay: from, noTopup: true });
+    g.nextRequest();
+    const r = g.call('getRecords_', 2026, 11).rows.find(x => x.row === res.row);
+    const date = R.bool(0.2) ? '2026-12-01' : r.date;   // 偶爾連日期一起改到下個月
+    g.call('updateEntry_', { y: 2026, m: 11, row: r.row, date, cat: r.cat, item: r.item, amount: String(r.amount), pay: to, note: r.note });
+    g.nextRequest();
+    const m = +date.slice(5, 7), got = g.call('getRecords_', 2026, m).rows.find(x => x.date === date && x.item === '早餐' && x.amount === r.amount);
+    assert.ok(got, '改完找不到這筆');
+    assert.equal(got.pay, to, from + ' → ' + to);
+    assert.equal(wb.month(m).val(got.row, 16), want[to]);
+  }
+});
+
 // ---------------------------------------------------------------- 一卡通
 test('一卡通：餘額守恆＝校正值＋自動加值 − 一卡通消費；加值筆數剛好夠用', () => {
   for (let i = 0; i < RUNS; i++) {
