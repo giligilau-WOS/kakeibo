@@ -191,6 +191,18 @@ function api(k, method, args) {
     case 'transfers': return transfersFor_(+args.y, +args.m);
     case 'bill': return getBill_(args.y, args.m);
     case 'setBill': return setBill_(args);
+    case 'findAmount': return findAmount_(args);
+    case 'matchBill': return matchBill_(args);
+    case 'invoices': return importInvoices_(args);
+    case 'ignoreInvoice': return ignoreInvoice_(args);
+    case 'close': return getClose_(args.y, args.m);
+    case 'setClose': return setClose_(args);
+    case 'planBase': return getPlanBase_(args.y);
+    case 'envelopes': return getEnvelopes_(args.y, args.m);
+    case 'borrow': return borrowEnvelope_(args);
+    case 'repay': return repayBorrow_(args);
+    case 'ecard': return { balance: ecardBalance_(), state: ecardState_() };
+    case 'setEcard': return setEcard_(args);
     case 'tax': return getTax_(args.y);
     case 'goals': return getGoals_(args.y, args.m);
     default: throw new Error('未知的功能：' + method);
@@ -220,7 +232,7 @@ function num_(v) { const n = Number(v); return isFinite(n) ? n : 0; }
 function fmt_(n) { return Math.round(num_(n)).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
 function catFull_(c) { return c === '國旅' ? TRAVEL_FULL : c; }
 function catShort_(c) { return c === TRAVEL_FULL ? '國旅' : c; }
-function payShort_(p) { return p === '現金' ? '現金' : '信用卡'; }
+function payShort_(p) { return p === '現金' ? '現金' : (p === ECARD_PAY ? ECARD_PAY : '信用卡'); }
 function prevMonth_(y, m) { return m === 1 ? { y: y - 1, m: 12 } : { y: y, m: m - 1 }; }
 function nextMonth_(y, m) { return m === 12 ? { y: y + 1, m: 1 } : { y: y, m: m + 1 }; }
 function dateText_(v) {
@@ -236,7 +248,8 @@ function dataVer_() {
   return _ver;
 }
 function bumpVer_() {
-  _ver = String(Date.now());
+  const prev = Number(dataVer_()) || 0;
+  _ver = String(Math.max(Date.now(), prev + 1));   // 一定要遞增，避免同一毫秒內讀到舊暫存
   PropertiesService.getScriptProperties().setProperty('DATA_VER', _ver);
   Object.keys(_memo).forEach(function (k) { delete _memo[k]; });
 }
@@ -334,14 +347,16 @@ function readTopRaw_(y, m) {
     return { name: name, budget: num_(g(8, c)), cash: num_(g(9, c)), card: num_(g(10, c)), total: num_(g(11, c)) };
   });
   cats.push({ name: '國旅', budget: 0, cash: num_(g(13, 14)), card: num_(g(13, 15)), total: num_(g(13, 13)), travel: true });
+  let extraSum = 0;
   safe_(function () {
+    borrowExtra_(y, m).forEach(function (b) { extraSum += b.extra; cats.forEach(function (c) { if (c.name === b.cat) c.budget += b.extra; }); });
     transfersFor_(y, m).forEach(function (t) {
       cats.forEach(function (c) { if (c.name === t.acct) c.budget -= t.amount; if (c.name === t.target) c.budget += t.amount; });
     });
   });
   return {
-    disposable: num_(g(4, 2)), plan: num_(g(7, 8)), budget: num_(g(8, 8)),
-    cash: num_(g(9, 8)), card: num_(g(10, 8)), spent: num_(g(11, 8)), left: num_(g(12, 8)),
+    disposable: num_(g(4, 2)), plan: num_(g(7, 8)), budget: num_(g(8, 8)) + extraSum, borrowedExtra: extraSum,
+    cash: num_(g(9, 8)), card: num_(g(10, 8)), spent: num_(g(11, 8)), left: num_(g(12, 8)) + extraSum,
     perDaySheet: num_(g(4, 5)), cardBillCell: num_(g(2, 5)), light: String(g(4, 9) || ''),
     cardTotal: num_(g(2, 12)), cardThis: num_(g(2, 14)), cardNext: num_(g(2, 16)),
     toCircle: num_(g(3, 16)), circled: num_(g(4, 14)), recordedTo: num_(g(2, 18)), incomplete: num_(g(3, 18)),
@@ -428,9 +443,15 @@ function addEntry_(a) {
   const cat = String(a.cat || '').trim(), item = String(a.item || '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('日期格式錯誤');
   if (!amt) throw new Error('請輸入金額');
-  if (CATS.concat(['國旅']).indexOf(cat) < 0) throw new Error('科目錯誤：' + cat);
+  if (CATS.concat(['國旅', ECARD_TOPUP_CAT]).indexOf(cat) < 0) throw new Error('科目錯誤：' + cat);
   const d = parseDate_(date);
-  const pay = (a.pay === '信用卡' || a.pay === CONFIG.cardLabel) ? CONFIG.cardLabel : '現金';
+  const pay = a.pay === ECARD_PAY ? ECARD_PAY : ((a.pay === '信用卡' || a.pay === CONFIG.cardLabel || cat === ECARD_TOPUP_CAT) ? CONFIG.cardLabel : '現金');
+  if (pay === ECARD_PAY || cat === ECARD_TOPUP_CAT) ensureSchema2_(d.y);
+  let topups = 0, balBefore = null;
+  if (pay === ECARD_PAY && !a.noTopup) {
+    balBefore = ecardBalance_();
+    if (balBefore !== null && balBefore < amt) topups = Math.ceil((amt - balBefore) / 500);
+  }
   const lock = LockService.getScriptLock(); lock.waitLock(10000);
   try {
     const sh = monthSheet_(d.y, d.m);
@@ -448,15 +469,19 @@ function addEntry_(a) {
     sh.getRange(row, 16, 1, 2).setValues([[pay, String(a.note || '')]]);
     SpreadsheetApp.flush();
     bumpVer_();
-    const top = readTop_(d.y, d.m);
-    const p = payShort_(pay);
-    return {
-      ok: true, row: row, used: used + 1,
-      left: top.left,
-      message: '已記錄 ' + d.m + '/' + d.d + '（' + p + '）' + (item || cat) + ' $' + fmt_(amt) + '｜本月還能花 $' + fmt_(top.left),
-      warnFull: used + 1 >= 480
-    };
+    var res = { ok: true, row: row, used: used + 1, warnFull: used + 1 >= 480, date: date, pay: payShort_(pay) };
   } finally { lock.releaseLock(); }
+  for (let k = 0; k < topups; k++) addEntry_({ date: date, cat: ECARD_TOPUP_CAT, item: '一卡通自動加值', amount: 500, pay: '信用卡', note: '自動加值（App 依一卡通餘額推算）' });
+  const top = readTop_(d.y, d.m);
+  res.left = top.left;
+  res.message = '已記錄 ' + d.m + '/' + d.d + '（' + res.pay + '）' + (item || cat) + ' $' + fmt_(amt) + '｜本月還能花 $' + fmt_(top.left);
+  if (pay === ECARD_PAY) {
+    const nb = ecardBalance_();
+    res.ecard = nb;
+    res.message += topups ? '｜一卡通餘額不足，已自動加值 $' + fmt_(topups * 500) + '（記成刷卡）' : '';
+    res.message += nb === null ? '｜請先校正一卡通餘額' : '｜一卡通餘額約 $' + fmt_(nb);
+  }
+  return res;
 }
 
 function updateEntry_(a) {
@@ -552,7 +577,13 @@ function getDashboard_(todayS) {
     const soon = prepaid.due.filter(function (x) { return x.status === 'soon'; });
     if (soon.length) tips.push({ level: 'info', text: '即將到期：' + soon.map(function (x) { return x.name + ' $' + fmt_(x.planned) + '（' + x.dueDate.slice(5).replace('-', '/') + '）'; }).join('、') });
   }
+  const closeYM = time.daysLeft <= 3 ? { y: t.y, m: t.m } : (t.d <= 5 ? prevMonth_(t.y, t.m) : null);
+  const closeInfo = closeYM && ss_(closeYM.y) ? safe_(function () { const c = getClose_(closeYM.y, closeYM.m); return { y: c.y, m: c.m, ok: c.ok, total: c.total, done: c.done }; }) : null;
   if (t.m === 5) tips.push({ level: 'info', text: '5 月報稅季：到「資產」頁查看去年度的報稅資料彙整。' });
+  const openB = safe_(function () { return borrowsOpen_(t.y); }) || [];
+  openB.filter(function (b) { return b.y < t.y || b.m < t.m; }).reverse().forEach(function (b) {
+    tips.unshift({ level: 'warn', action: 'repay', id: b.id, amount: b.amount, text: '待歸還調用：' + b.name + ' $' + fmt_(b.amount) + '（' + b.y + '/' + b.m + ' 從' + b.acct + '借到日常，' + b.cat + '）。從日常戶轉回後按「已歸還」。' });
+  });
   const debts = getDebts_(t.y);
   debts.slice().reverse().forEach(function (dbt) { tips.unshift({ level: 'warn', action: 'debt', row: dbt.row, y: t.y, text: '待回補缺口：' + dbt.name + ' $' + fmt_(dbt.amount) + '。補上後請按「已補上」。' }); });
   if (top.incomplete > 0) tips.push({ level: 'warn', text: '有 ' + top.incomplete + ' 筆流水帳資料不完整，請到紀錄頁補齊。' });
@@ -578,7 +609,7 @@ function getDashboard_(todayS) {
     left: Math.round(top.left), perDay: perDay, todaySpent: todayAll, dayAllowance: dayAllowance, todayLeft: dayAllowance - todayAll, budget: top.budget, spent: top.spent, cardSpent: top.card,
     count: ledger.length, spendRatio: spendRatio, timeRatio: time.ratio, daysLeft: time.daysLeft,
     status: top.left < 0 ? 'over' : (spendRatio > time.ratio + 0.05 ? 'fast' : 'ok'),
-    tips: tips.slice(0, 5 + debts.length), debts: debts, verse: verseFor_(todayS, top.tithe), invest: invest, check: check, payday: payday, cmp: cmp,
+    tips: tips.slice(0, 5 + debts.length + openB.length), debts: debts, closeInfo: closeInfo, borrows: openB, ecard: safe_(function () { return ecardBalance_(); }), verse: verseFor_(todayS, top.tithe), invest: invest, check: check, payday: payday, cmp: cmp,
     cats: top.cats.map(function (c) {
       const td = todayBy[c.name] || 0, allow = Math.max(0, Math.round((c.budget - (c.total - td)) / dl));
       return { name: c.name, budget: c.budget, cash: c.cash, card: c.card, total: c.total, today: td, allowance: allow, todayLeft: allow - td,
@@ -667,6 +698,11 @@ function getAllocation_(y, m) {
     add('郵局日常戶', '永豐', toSino - refill, sinoNote + (refill ? '（已扣掉回補 $' + fmt_(refill) + '）' : ''));
   }
   if (twRefill > 0) add('台銀 B 帳戶', '郵局日常戶', twRefill, '台銀回補日常戶');
+  safe_(function () {
+    borrowsOpen_(y).filter(function (b) { return b.y < y || b.m < m; }).forEach(function (b) {
+      add('郵局日常戶', b.y < y ? '永豐／台銀' : b.acct, b.amount, '歸還調用：' + b.name + '（' + b.y + '/' + b.m + ' 借出），轉完到今日頁按「已歸還」');
+    });
+  });
   return { debts: getDebts_(y), y: y, m: m, salary: pay || salary, spendable: spendable, refill: refill, list: list, done: allocDoneAt_(y, m) || '' };
 }
 
@@ -1101,9 +1137,165 @@ function getBill_(y, m) {
   if (y >= 2027) fixed = num_(safe_(function () { return readTop_(y, m).cardBillCell; }));
   recorded += fixed;
   const logs = readLog_(y).filter(function (r) { return r.type === '帳單' && r.m === m; });
-  const bill = logs.length ? logs[logs.length - 1] : null;
+  const bill = logs.filter(function (r) { return !r.data; }).pop() || null;      // 你輸入的帳單金額
+  const detail = logs.filter(function (r) { return r.data; }).pop();            // 最後一次貼上的明細
   return { y: y, m: m, from: p2.y + '-' + String(p2.m).padStart(2, '0') + '-23', to: p1.y + '-' + String(p1.m).padStart(2, '0') + '-22',
-           rows: rows, fixed: fixed, recorded: recorded, bill: bill ? bill.amount : null, billRow: bill ? bill.row : null, diff: bill ? bill.amount - recorded : null };
+           rows: rows, fixed: fixed, detail: detail ? safe_(function () { return JSON.parse(detail.data); }) : null, detailTotal: detail ? detail.amount : null, recorded: recorded, bill: bill ? bill.amount : null, billRow: bill ? bill.row : null, diff: bill ? bill.amount - recorded : null };
+}
+// 對帳找差異：在帳單期間前後 3 天，找金額相同、或算式裡含這個數字的紀錄
+function findAmount_(a) {
+  const y = +a.y, m = +a.m, amt = Math.round(num_(a.amount));
+  if (!amt) throw new Error('請輸入要找的金額');
+  const b = getBill_(y, m), from = addDaysStr_(b.from, -3), to = addDaysStr_(b.to, 3);
+  const c0 = a.center ? addDaysStr_(a.center, -3) : null, c1 = a.center ? addDaysStr_(a.center, 3) : null;
+  const out = [];
+  cardPool_(a.center ? [a.center] : [], b).forEach(function (r) {
+    {
+      if (!((r.date >= from && r.date <= to) || (c0 && r.date >= c0 && r.date <= c1))) return;
+      const text = (r.note || '') + ' ' + (r.item || '');
+      const terms = (text.match(/\d+(?:\.\d+)?/g) || []).map(Number);
+      let kind = null;
+      if (Math.round(r.amount) === amt) kind = 'exact';
+      else if (terms.indexOf(amt) >= 0) kind = 'term';
+      if (!kind) return;
+      const inPeriod = r.date >= b.from && r.date <= b.to;
+      const hints = [];
+      if (r.pay === '現金') hints.push('記成現金，若這是刷卡消費就是誤記');
+      if (kind === 'term') hints.push('包在 ' + r.date.slice(5).replace('-', '/') + '「' + r.cat + '」的算式裡');
+      if (!inPeriod) hints.push('日期在帳單期間外');
+      if (r.pay === '信用卡' && kind === 'exact' && inPeriod) hints.push('已記為本期刷卡');
+      out.push({ date: r.date, cat: r.cat, item: r.item, pay: r.pay, amount: r.amount, note: r.note, row: r.row, kind: kind, inPeriod: inPeriod, hints: hints });
+    }
+  });
+  out.sort(function (p, q) { const w = function (x) { return (x.pay === '信用卡' && x.kind === 'exact' && x.inPeriod) ? 2 : (x.kind === 'exact' ? 0 : 1); }; return w(p) - w(q) || (p.date < q.date ? -1 : 1); });
+  return { amount: amt, from: from, to: to, matches: out };
+}
+// 解析貼上的帳單明細（支援「日期 店名：NTD 金額」一行一筆，以及聯邦 App 兩行一筆）
+const BILL_SKIP = /(應繳|已繳|餘額|新增|調整\)?款項|最低|查證|帳單日期|截止|額度|紅利|點數|循環|利率|合計|總計|小計|前期|上期|注意|信用卡帳單明細|離開|最近一期|帳單$)/;
+const AMT_TAG = /(-?)\s*(?:NTD|NT\$|TWD|NT|\$)\s*(-?)\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*$/i;
+function parseBillLines_(text, y) {
+  const norm = String(text || '').replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 65248); })
+    .replace(/，/g, ',').replace(/\u00a0/g, ' ');
+  const out = []; let cur = null, skipNext = false;
+  const push = function () { if (cur && cur.amount) out.push({ amount: cur.amount, date: cur.date || '', iso: cur.iso || '', desc: (cur.desc || '').replace(/[：:]\s*$/, '').trim().slice(0, 40) }); cur = null; };
+  norm.split(/\r?\n/).forEach(function (raw) {
+    let L = raw.trim(); if (!L) return;
+    if (BILL_SKIP.test(L) && !/[：:]\s*(?:NTD|NT\$|TWD)/i.test(L)) { push(); skipNext = !/\d/.test(L.replace(/\d{3,4}[\/\-.]\d{1,2}[\/\-.]\d{1,2}/g, '')); return; }
+    let date = '', iso = '';
+    const full = L.match(/^\s*(\d{3,4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/) || L.match(/(?:^|\s)(\d{3,4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})(?=\s|$)/);
+    const short = full ? null : L.match(/^\s*(\d{1,2})[\/\-](\d{1,2})(?=\s)/);
+    if (full) { let yy = +full[1]; if (yy < 1911) yy += 1911; date = (+full[2]) + '/' + (+full[3]); iso = yy + '-' + String(+full[2]).padStart(2, '0') + '-' + String(+full[3]).padStart(2, '0'); L = L.replace(full[0], ' '); }
+    else if (short) { date = (+short[1]) + '/' + (+short[2]); L = L.replace(short[0], ' '); }
+    L = L.replace(/\*+\s*\d{4}/g, ' ').replace(/\d{4}-\d{4}-\d{4}-\d{4}/g, ' ').trim();
+    let amt = null, desc = '';
+    const tag = L.match(AMT_TAG);
+    if (tag) { amt = (tag[1] || tag[2] ? -1 : 1) * Number(tag[3].replace(/,/g, '')); desc = L.slice(0, tag.index).trim(); }
+    else {
+      const m2 = L.match(/(-?\d{1,3}(?:,\d{3})+|-?\d+)(?:\.\d+)?\s*$/);
+      if (m2 && (L.length === m2[0].length || /\s/.test(L.charAt(m2.index - 1)))) { amt = Math.round(Number(m2[1].replace(/,/g, ''))); desc = L.slice(0, m2.index).trim(); }
+      else desc = L;
+    }
+    if (amt !== null && (!amt || Math.abs(amt) > 1000000)) amt = null;
+    if (skipNext) { skipNext = false; if (amt !== null && !desc && !date) return; }
+    if (amt !== null) {
+      if (cur && cur.amount) push();
+      cur = cur || {};
+      cur.amount = Math.round(amt); if (date) { cur.date = date; cur.iso = iso; } if (desc) cur.desc = ((cur.desc || '') + ' ' + desc).trim();
+    } else if (date) {
+      if (cur && cur.amount && !cur.date) { cur.date = date; cur.iso = iso; if (desc && !cur.desc) cur.desc = desc; }
+      else { push(); cur = { date: date, iso: iso, desc: desc }; }
+    } else if (desc) {
+      if (cur && cur.amount && cur.date) push();
+      cur = cur || {}; cur.desc = ((cur.desc || '') + ' ' + desc).trim();
+    }
+  });
+  push();
+  return out;
+}
+function lineIso_(L, b) {
+  if (L.iso) return L.iso;
+  if (!L.date) return '';
+  const p = L.date.split('/'), mo = +p[0], d = +p[1];
+  const fy = +b.from.slice(0, 4), fm = +b.from.slice(5, 7), ty = +b.to.slice(0, 4);
+  const yy = mo === fm ? fy : (mo > +b.to.slice(5, 7) && fy < ty ? fy : ty);
+  return yy + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+}
+// 店名比對用：全形轉半形、去掉標點空白與數字、轉大寫
+function normName_(t) {
+  return String(t || '').replace(/[\uFF01-\uFF5E]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 65248); })
+    .replace(/（.*?）|\(.*?\)|〔.*?〕/g, '').replace(/[\s\-－:：*＊\/.,，、]/g, '').replace(/\d+/g, '').toUpperCase().slice(0, 12);
+}
+function instNo_(t) {   // 分期期數，例如（03/03）→ "3/3"
+  const m = String(t || '').replace(/[\uFF10-\uFF19]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 65248); }).match(/[（(]\s*0*(\d+)\s*\/\s*0*(\d+)\s*[）)]/);
+  return m ? m[1] + '/' + m[2] : '';
+}
+function sameShop_(line, r) {
+  const a = normName_(line.desc), b = normName_(r.item);
+  if (!a || !b) return false;
+  const short = a.length < b.length ? a : b, long = a.length < b.length ? b : a;
+  if (long.indexOf(short.slice(0, Math.min(4, short.length))) < 0) return false;
+  const i1 = instNo_(line.desc), i2 = instNo_(r.item);
+  return !(i1 && i2 && i1 !== i2);
+}
+function dayDiff_(a, b) { return Math.round(Math.abs(new Date(a + 'T00:00:00') - new Date(b + 'T00:00:00')) / 86400000); }
+function cardPool_(isoList, b) {   // 期間內＋期間前10天後3天＋每筆明細日期前後5天 的刷卡紀錄
+  const months = {}, add = function (iso) { months[iso.slice(0, 7)] = true; };
+  add(addDaysStr_(b.from, -10)); add(b.from); add(b.to); add(addDaysStr_(b.to, 3));
+  isoList.forEach(function (iso) { if (iso) { add(addDaysStr_(iso, -5)); add(iso); add(addDaysStr_(iso, 5)); } });
+  const pool = [];
+  Object.keys(months).forEach(function (k) {
+    const yy = +k.slice(0, 4), mm = +k.slice(5, 7);
+    (safe_(function () { return readLedger_(yy, mm); }) || []).forEach(function (r) { pool.push(r); });
+  });
+  return pool;
+}
+// 逐筆比對：帳單明細 vs App 記錄
+function matchBill_(a) {
+  const y = +a.y, m = +a.m, b = getBill_(y, m);
+  const lines = parseBillLines_(a.text, y);
+  if (!lines.length) throw new Error('沒有讀到任何金額，請確認每行有一筆金額');
+  lines.forEach(function (L) { L.iso = lineIso_(L, b); });
+  // 刷退與原消費互相抵銷
+  const cancelled = [], base = function (d) { return String(d || '').replace(/[（(]?刷退[）)]?/g, '').trim(); };
+  lines.forEach(function (L) {
+    if (L.amount >= 0 || L.cancel) return;
+    const P = lines.filter(function (x) { return !x.cancel && x.amount === -L.amount && x !== L && (x.iso === L.iso || base(x.desc) === base(L.desc)); })
+      .sort(function (p, q) { return (base(q.desc) === base(L.desc)) - (base(p.desc) === base(L.desc)); })[0];
+    if (P) { P.cancel = L.cancel = true; cancelled.push({ charge: P, refund: L }); }
+  });
+  const active = lines.filter(function (L) { return !L.cancel; });
+  const pool = cardPool_(active.map(function (L) { return L.iso; }), b);
+  const cards = pool.filter(function (r) { return r.pay === '信用卡'; }).map(function (r) { return { r: r, used: false }; });
+  const lo = addDaysStr_(b.from, -10), hi = addDaysStr_(b.to, 3);
+  const matched = [], billOnly = [], refunds = [];
+  active.forEach(function (L) {
+    if (L.amount < 0) { refunds.push(L); return; }
+    let best = null, bestGap = 1e9;
+    cards.forEach(function (x) {
+      if (x.used || Math.round(x.r.amount) !== L.amount) return;
+      const inPer = x.r.date >= b.from && x.r.date <= b.to, inExt = x.r.date >= lo && x.r.date <= hi;
+      const gap = L.iso ? dayDiff_(L.iso, x.r.date) : (inPer ? 0 : 50);
+      if (L.iso ? gap > 5 && !inExt : !inExt) return;
+      const score = gap + (inPer ? 0 : 0.5) - (sameShop_(L, x.r) ? 3 : 0);
+      if (score < bestGap) { best = x; bestGap = score; }
+    });
+    if (best) { best.used = true; matched.push({ line: L, rec: best.r, ext: !(best.r.date >= b.from && best.r.date <= b.to) }); }
+    else {
+      const f = findAmount_({ y: y, m: m, amount: L.amount, center: L.iso });
+      billOnly.push({ line: L, found: f.matches.filter(function (x) { return !(x.pay === '信用卡' && x.kind === 'exact'); }) });
+    }
+  });
+  // App 有、帳單沒有：期間內未配對的刷卡；以及期間外「補記／補登」、和帳單某筆同金額、同店名、同期數、日期相近卻沒配到的（可能重複補記）
+  const appOnly = cards.filter(function (x) {
+    if (x.used) return false;
+    if (x.r.date >= b.from && x.r.date <= b.to) return true;
+    if (!/補記|補登/.test(x.r.note)) return false;
+    return active.some(function (L) { return L.amount === Math.round(x.r.amount) && L.iso && dayDiff_(L.iso, x.r.date) <= 5 && sameShop_(L, x.r); });
+  }).map(function (x) { const o = JSON.parse(JSON.stringify(x.r)); o.dup = !(x.r.date >= b.from && x.r.date <= b.to); return o; });
+  const billTotal = lines.reduce(function (s2, L) { return s2 + L.amount; }, 0);
+  if (!a.nosave) appendLog_(y, { type: '帳單', date: todayStr_(), m: m, name: m + '月6日帳單（明細）', amount: billTotal, acct: '信用卡', note: lines.length + ' 筆', data: JSON.stringify(lines).slice(0, 45000) });
+  return { y: y, m: m, from: b.from, to: b.to, lines: lines.length, parsed: lines, billTotal: billTotal, billInput: b.bill, recorded: b.recorded, fixed: b.fixed,
+           matched: matched, billOnly: billOnly, appOnly: appOnly, refunds: refunds, cancelled: cancelled };
 }
 function setBill_(a) {
   appendLog_(+a.y, { type: '帳單', date: todayStr_(), m: +a.m, name: (+a.m) + '月6日帳單', amount: Math.round(num_(a.amount)), acct: '信用卡', note: a.note || '' });
@@ -1157,6 +1349,374 @@ function 設定每週自動備份() {
   ScriptApp.newTrigger('立即備份').timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(3).create();
   立即備份();
   Logger.log('已設定：每週日凌晨 3 點自動備份，並已先備份一次。');
+}
+
+// ===== 16. 電子發票匯入（財政部電子發票整合服務平台「載具消費明細」CSV）=====
+const STORE_CAT = [
+  [/加油|中油|台塑|全國加油|福懋|台亞|一卡通儲值|ETAG|遠通/i, '油料', '加油'],
+  [/全聯|家樂福|好市多|COSTCO|美廉社|大潤發|愛買|頂好|超市|市場/i, '食物', '超市/菜市場採買'],
+  [/統一超商|7-?ELEVEN|全家|萊爾富|OK|便利/i, '食物', '飲料'],
+  [/麥當勞|摩斯|肯德基|星巴克|路易莎|85度C|咖啡|餐|飯|麵|食|小吃|早餐|便當|鍋|茶|飲/i, '食物', '午餐'],
+  [/藥局|藥妝|屈臣氏|康是美|診所|醫院|醫/i, '其他', '醫療/藥品'],
+  [/書局|書店|誠品|金石堂|文具/i, '教育', '學費/教材'],
+  [/停車|車旅/i, '其他', '停車/過路費'],
+  [/寵物/i, '其他', '寵物用品'],
+  [/影城|威秀|樂園|遊樂|KTV|玩具/i, '娛樂', '電影/娛樂']
+];
+function parseInvoices_(text) {
+  const out = {}, items = {};
+  String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).forEach(function (line) {
+    const L = line.trim(); if (!L || /^表頭|^明細/.test(L)) return;
+    const sep = L.indexOf('|') >= 0 ? '|' : ',';
+    const c = L.split(sep).map(function (x) { return x.trim().replace(/^"|"$/g, ''); });
+    if (c[0] === 'M' && c.length >= 8) {
+      let d = c[3].replace(/\D/g, '');
+      if (d.length === 7) d = String(+d.slice(0, 3) + 1911) + d.slice(3);
+      if (d.length !== 8) return;
+      const no = c[6];
+      out[no] = { no: no, date: d.slice(0, 4) + '-' + d.slice(4, 6) + '-' + d.slice(6, 8), taxId: c[4], store: c[5], amount: Math.round(num_(c[7])), status: c[8] || '', items: [] };
+    } else if (c[0] === 'D' && c.length >= 4) {
+      (items[c[1]] = items[c[1]] || []).push({ amount: num_(c[2]), name: c[3] });
+    }
+  });
+  Object.keys(items).forEach(function (no) { if (out[no]) out[no].items = items[no]; });
+  return Object.keys(out).map(function (k) { return out[k]; }).filter(function (v) { return !/作廢|折讓/.test(v.status) && v.amount > 0; })
+    .sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+}
+function guessCat_(store, itemsText, history) {
+  const h = history[normName_(store)];
+  if (h) return h;
+  const text = store + ' ' + itemsText;
+  for (let i = 0; i < STORE_CAT.length; i++) if (STORE_CAT[i][0].test(text)) return { cat: STORE_CAT[i][1], item: STORE_CAT[i][2] };
+  return { cat: '食物', item: '' };
+}
+function importInvoices_(a) {
+  const inv = parseInvoices_(a.text);
+  if (!inv.length) throw new Error('沒有讀到發票。請確認是從「電子發票整合服務平台」匯出的載具消費明細 CSV。');
+  const months = {};
+  inv.forEach(function (v) { months[v.date.slice(0, 7)] = true; [-1, 1].forEach(function (k) { months[addDaysStr_(v.date, k).slice(0, 7)] = true; }); });
+  const rows = [], ignored = {};
+  Object.keys(months).forEach(function (k) {
+    const yy = +k.slice(0, 4), mm = +k.slice(5, 7);
+    (safe_(function () { return readLedger_(yy, mm); }) || []).forEach(function (r) { rows.push({ r: r, used: 0 }); });
+    safe_(function () { readLog_(yy).forEach(function (l) { if (l.type === '發票忽略') ignored[l.target] = true; }); });
+  });
+  // 店名 → 過去記過的科目／項目
+  const history = {};
+  rows.forEach(function (x) { if (x.r.item && x.r.item !== '舊帳轉入') history[normName_(x.r.item)] = { cat: x.r.cat, item: x.r.item }; });
+  const matched = [], missing = [], skipped = [];
+  inv.forEach(function (v) {
+    if (ignored[v.no]) { skipped.push(v); return; }
+    // 1) 同金額、日期 ±1 天的紀錄（剩餘可用金額足夠）
+    let best = null, bg = 9;
+    rows.forEach(function (x) {
+      const remain = Math.round(x.r.amount) - x.used;
+      const g = dayDiff_(x.r.date, v.date); if (g > 1 || remain < v.amount) return;
+      const exact = remain === v.amount;
+      const terms = (String(x.r.note || '').match(/\d+/g) || []).map(Number);
+      if (!exact && terms.indexOf(v.amount) < 0) return;
+      const sc = g + (exact ? 0 : 0.5);
+      if (sc < bg) { best = x; bg = sc; }
+    });
+    if (best) { best.used += v.amount; matched.push({ inv: v, rec: best.r, how: Math.round(best.r.amount) === v.amount ? 'exact' : 'term' }); return; }
+    const g = guessCat_(v.store, v.items.map(function (i) { return i.name; }).join(' '), history);
+    missing.push({ inv: v, cat: g.cat, item: g.item || v.store });
+  });
+  if (!a.nosave) {
+    const ms = {}; inv.forEach(function (v) { ms[v.date.slice(0, 7)] = (ms[v.date.slice(0, 7)] || 0) + 1; });
+    Object.keys(ms).forEach(function (k) { appendLog_(+k.slice(0, 4), { type: '發票匯入', date: todayStr_(), m: +k.slice(5, 7), name: k + ' 電子發票', amount: ms[k], note: '比對 ' + ms[k] + ' 張' }); });
+  }
+  return { count: inv.length, total: inv.reduce(function (s, v) { return s + v.amount; }, 0), matched: matched, missing: missing, skipped: skipped.length,
+           from: inv[0].date, to: inv[inv.length - 1].date };
+}
+function ignoreInvoice_(a) {
+  appendLog_(+String(a.date).slice(0, 4), { type: '發票忽略', date: todayStr_(), m: +String(a.date).slice(5, 7), name: a.store || '', amount: a.amount || 0, target: a.no, note: a.reason || '' });
+  return { ok: true, message: '這張發票之後不再列出' };
+}
+
+// ===== 17. 月底結帳精靈 =====
+function closeKey_(y, m) { return 'CLOSE_' + y + '_' + m; }
+function getClose_(y, m) {
+  y = +y; m = +m;
+  const st = JSON.parse(PropertiesService.getScriptProperties().getProperty(closeKey_(y, m)) || '{}');
+  const man = st.manual || {}, items = [];
+  const top = safe_(function () { return readTop_(y, m); });
+  const sh = monthSheet_(y, m), g3 = sh.getRange('G3'), cashEntered = !g3.getFormula() && g3.getValue() !== '';
+  const diff = num_(sh.getRange('I3').getValue()), expected = num_(sh.getRange('E3').getValue());
+  const pp = safe_(function () { return getPrepaid_(y, m); });
+  const bill = safe_(function () { const nm = nextMonth_(y, m); return getBill_(nm.y, nm.m); });
+  const log = readLog_(y);
+  const invDone = log.some(function (l) { return l.type === '發票匯入' && l.m === m; });
+  const mon = safe_(function () { return getMonthly_(y, m); });
+  const monMissing = mon ? mon.accounts.filter(function (x) { return !x.auto && x.prev && (x.value === '' || x.value === null); }).length : null;
+  const debts = getDebts_(y);
+  const check = PROFILE[y] && PROFILE[y].check ? String(rowValue_(y, PROFILE[y].check, m) || '') : '';
+  const add = function (key, title, ok, detail, action, manualOk) { items.push({ key: key, title: title, ok: !!(ok || (manualOk && man[key])), auto: !manualOk, detail: detail, action: action || '', manual: !!man[key] }); };
+  add('ledger', '流水帳資料完整', top && !top.incomplete, top && top.incomplete ? '有 ' + top.incomplete + ' 筆缺日期、科目或支付方式' : '每筆都有日期、科目、支付方式', 'records');
+  add('circle', '本月刷卡都已圈存', top && top.toCircle <= 0, top && top.toCircle > 0 ? '還有 $' + fmt_(top.toCircle) + ' 未轉到待繳戶' : '刷卡金額都已轉到待繳戶', 'today');
+  add('prepaid', '預扣項目都已繳費', pp && !pp.unpaid, pp ? (pp.unpaid ? '還有 ' + pp.unpaid + ' 項未繳：' + pp.due.filter(function (x) { return x.due && !x.paid; }).map(function (x) { return x.name; }).join('、') : '本月 ' + pp.due.length + ' 項都已繳') : '', 'prepaid');
+  add('bill', '信用卡帳單已對帳', bill && bill.bill != null && bill.diff === 0, bill ? (bill.bill == null ? (bill.m + ' 月 6 日帳單還沒輸入金額（帳單出來後再做，可以先手動打勾）') : (bill.diff === 0 ? '帳單金額和紀錄一致' : '差 $' + fmt_(Math.abs(bill.diff)))) : '', 'bill', true);
+  add('invoice', '電子發票已比對', invDone, invDone ? '本月發票已匯入比對' : '到「紀錄」頁匯入本月電子發票', 'invoice', true);
+  add('cash', '郵局＋錢包實際現金已盤點', cashEntered && Math.abs(diff) <= 1000, cashEntered ? ('實際 $' + fmt_(g3.getValue()) + '，帳面 $' + fmt_(expected) + '，差 ' + (diff >= 0 ? '+' : '−') + '$' + fmt_(Math.abs(diff)) + (Math.abs(diff) > 1000 ? '（超過 1,000，請找漏記）' : '')) : '帳面應有 $' + fmt_(expected) + '，請輸入實際金額', 'cash');
+  add('monthly', '滿月盤點已填', monMissing === 0, monMissing === null ? '' : (monMissing ? '還有 ' + monMissing + ' 個帳戶未填' : '各帳戶餘額都已填'), 'assets');
+  if (debts.length) add('debt', '待回補缺口', false, debts.map(function (d) { return d.name + ' $' + fmt_(d.amount); }).join('；'), 'today', true);
+  if (check) add('verify', '總表驗算通過', check.indexOf('✅') === 0, check, '', false);
+  if (y >= 2027) add('transfer', '月底結餘已轉入永豐（日常平衡金）', false, '依總表把本月結餘轉入永豐，完成後打勾', '', true);
+  const okN = items.filter(function (x) { return x.ok; }).length;
+  return { y: y, m: m, items: items, ok: okN, total: items.length, done: st.doneAt || '', expectedCash: expected };
+}
+function setClose_(a) {
+  const y = +a.y, m = +a.m, props = PropertiesService.getScriptProperties();
+  const st = JSON.parse(props.getProperty(closeKey_(y, m)) || '{}'); st.manual = st.manual || {};
+  if (a.key) st.manual[a.key] = !!a.val;
+  if (a.finish === true) st.doneAt = Utilities.formatDate(new Date(), CONFIG.timezone, 'M/d HH:mm');
+  if (a.finish === false) delete st.doneAt;
+  props.setProperty(closeKey_(y, m), JSON.stringify(st));
+  if (a.cash != null && a.cash !== '') { monthSheet_(y, m).getRange('G3').setValue(Math.round(num_(a.cash))); SpreadsheetApp.flush(); bumpVer_(); }
+  return getClose_(y, m);
+}
+
+// ===== 18. 明年預算試算 =====
+function getPlanBase_(y) {
+  y = +y;
+  const t = parseDate_(todayStr_());
+  const months = [];
+  for (let m = 1; m <= 12; m++) {
+    const top = safe_(function () { return readTop_(y, m); });
+    const past = y < t.y || (y === t.y && m < t.m);
+    months.push({ m: m, past: past, budget: top ? top.cats.filter(function (c) { return !c.travel; }).map(function (c) { return c.budget; }) : [0, 0, 0, 0, 0, 0],
+                  actual: top ? top.cats.filter(function (c) { return !c.travel; }).map(function (c) { return c.total; }) : [0, 0, 0, 0, 0, 0] });
+  }
+  const ys = yearSeries_(y), done = months.filter(function (x) { return x.past; }).length;
+  let saving = null;
+  if (ys && done) { const inc = ys.income.slice(0, done).reduce(function (a2, b2) { return a2 + b2; }, 0), exp = ys.expense.slice(0, done).reduce(function (a2, b2) { return a2 + b2; }, 0); saving = Math.round((inc - exp) / done); }
+  const goals = safe_(function () { return getGoals_(y, Math.max(1, Math.min(12, done || 1))); });
+  return { y: y, cats: CATS, months: months, done: done, saving: saving, emergencyGap: goals && goals.emergency ? Math.max(0, goals.emergency.target - goals.emergency.yearEnd) : CONFIG.emergencyTarget };
+}
+
+// ===== 19. 試算表升級：一卡通、信封調用列（每個年度只做一次）=====
+const ECARD_PAY = '一卡通', ECARD_TOPUP_CAT = '一卡通儲值';
+function ensureSchema2_(y) {
+  y = +y;
+  const props = PropertiesService.getScriptProperties(), flag = 'SCHEMA2_' + y;
+  if (props.getProperty(flag) || !ss_(y)) return false;
+  const s = ss_(y);
+  for (let m = 1; m <= 12; m++) {
+    const sh = s.getSheetByName(y + '年' + m + '月'); if (!sh) continue;
+    sh.getRange('L2').setFormula('=SUMIFS($N$16:$N$515, $O$16:$O$515, "*期帳單*", $P$16:$P$515, "<>' + ECARD_PAY + '")');
+    sh.getRange('N2').setFormula('=SUMIFS($N$16:$N$515, $O$16:$O$515, "本期帳單(次月6日繳)", $P$16:$P$515, "<>' + ECARD_PAY + '")');
+    sh.getRange('P2').setFormula('=SUMIFS($N$16:$N$515, $O$16:$O$515, "下期帳單(下下月6日繳)", $P$16:$P$515, "<>' + ECARD_PAY + '")');
+    const rule = SpreadsheetApp.newDataValidation().requireValueInList(['奉獻', '食物', '教育', '油料', '娛樂', '其他', '國旅專款(不扣日常預算)', ECARD_TOPUP_CAT], true).setAllowInvalid(false).build();
+    sh.getRange('L16:L515').setDataValidation(rule);
+  }
+  const menu = s.getSheetByName('選單');
+  const pays = menu.getRange('C2:C11').getValues().map(function (r) { return String(r[0] || ''); });
+  if (pays.indexOf(ECARD_PAY) < 0) { const i = pays.indexOf(''); if (i >= 0) menu.getRange(2 + i, 3).setValue(ECARD_PAY); }
+  if (y >= 2027) {
+    const yf = s.getSheetByName('永豐銀行準備金定期定額'), tb = s.getSheetByName('台銀帳戶_預扣及攤平'), inc = s.getSheetByName('收入');
+    const L = 'BCDEFGHIJKLM';
+    yf.getRange('A66').setValue('【調用】信封臨時調用到日常戶（正數＝借出，負數＝歸還；App 自動寫入）');
+    tb.getRange('A14').setValue('【調用】信封臨時調用到日常戶（正數＝借出，負數＝歸還；App 自動寫入）');
+    for (let i = 0; i < 12; i++) {
+      const c = L.charAt(i), mon = (i + 1);
+      if (yf.getRange(c + '66').getValue() === '') yf.getRange(c + '66').setValue(0);
+      if (tb.getRange(c + '14').getValue() === '') tb.getRange(c + '14').setValue(0);
+      yf.getRange(c + '5').setFormula('=SUM(' + c + '10:' + c + '33)+' + c + '59+' + c + '61+' + c + '66');
+      tb.getRange(c + '4').setFormula('=SUM(' + c + '7:' + c + '8)+' + c + '14');
+      inc.getRange(c + '8').setFormula("='" + y + '年' + mon + "月'!B3+'永豐銀行準備金定期定額'!" + c + "66+'台銀帳戶_預扣及攤平'!" + c + '14');
+    }
+    inc.getRange('A8').setValue('其他(永豐回補：補當月缺額，自動＋信封調用)');
+  }
+  SpreadsheetApp.flush();
+  props.setProperty(flag, Utilities.formatDate(new Date(), CONFIG.timezone, 'yyyy-MM-dd HH:mm'));
+  bumpVer_();
+  return true;
+}
+function 升級試算表_一卡通與信封() {
+  Object.keys(CONFIG.files).forEach(function (y) { PropertiesService.getScriptProperties().deleteProperty('SCHEMA2_' + y); Logger.log(y + ' 年：' + (ensureSchema2_(+y) ? '已升級' : '略過')); });
+}
+
+// ===== 20. 一卡通（當成錢包）=====
+function ecardState_() { return JSON.parse(PropertiesService.getScriptProperties().getProperty('ECARD') || 'null'); }
+function ecardBalance_() {
+  const st = ecardState_(); if (!st) return null;
+  let bal = num_(st.bal);
+  const t = parseDate_(todayStr_()); let ym = { y: +st.date.slice(0, 4), m: +st.date.slice(5, 7) }, guard = 0;
+  while ((ym.y < t.y || (ym.y === t.y && ym.m <= t.m)) && guard++ < 36) {
+    const cur = ym;
+    (safe_(function () { return ss_(cur.y) ? readLedger_(cur.y, cur.m) : []; }) || []).forEach(function (r) {
+      if (r.date < st.date || (r.date === st.date && (st.seen || []).indexOf(cur.y + '-' + cur.m + ':' + r.row) >= 0)) return;
+      if (r.cat === ECARD_TOPUP_CAT) bal += r.amount;
+      else if (r.pay === ECARD_PAY) bal -= r.amount;
+    });
+    ym = nextMonth_(ym.y, ym.m);
+  }
+  return Math.round(bal);
+}
+function setEcard_(a) {
+  const td = todayStr_(), t = parseDate_(td);
+  const seen = (safe_(function () { return readLedger_(t.y, t.m); }) || []).filter(function (r) { return r.date === td && (r.pay === ECARD_PAY || r.cat === ECARD_TOPUP_CAT); }).map(function (r) { return t.y + '-' + t.m + ':' + r.row; });
+  PropertiesService.getScriptProperties().setProperty('ECARD', JSON.stringify({ bal: Math.round(num_(a.balance)), date: td, seen: seen }));
+  bumpVer_();
+  return { ok: true, balance: ecardBalance_(), message: '一卡通餘額已校正為 $' + fmt_(a.balance) };
+}
+
+// ===== 21. 預扣信封（每個攤平項目的水位）=====
+const ENV = {
+  // attr：不屬於任何項目的支出列，歸到指定信封（列號 → 信封列號）
+  // lines：在帳戶總覽單獨列出的進出（borrow:true 表示也是 App 調用寫入的列）
+  2026: [{ acct: '台銀', sheet: '台銀帳戶(預扣及攤平)', payCol: 2, allocCol: 17, allocOffset: -6, depRow: 4, balRow: 7, borrowRow: 37,
+           rows: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 35],
+           attr: { 34: 16, 36: 24 },                                  // 5 月投資轉出 → 綜所稅；10 月代繳卡費 → 小布丁夏令營
+           lines: [{ row: 37, label: '轉出回補日常戶', borrow: true }] }],
+  2027: [{ acct: '台銀', sheet: '台銀帳戶_預扣及攤平', payCol: 2, allocCol: 2, allocOffset: 4, balRow: 5, borrowRow: 14, rows: [7, 8],
+           attr: {}, lines: [{ row: 14, label: '信封調用（借出／歸還）', borrow: true }], opening: { row: 2, col: 2, label: '電費週轉金（期初）' } },
+         { acct: '永豐', sheet: '永豐銀行準備金定期定額', payCol: 2, allocCol: 2, allocOffset: 25, balRow: 65, borrowRow: 66,
+           rows: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+           attr: {}, lines: [{ row: 61, label: '旅遊專款撥出' }, { row: 66, label: '信封調用（借出／歸還）', borrow: true }], carryIn: true }]
+};
+function envName_(y, acct, row) {
+  const it = (PREPAID[y] || []).reduce(function (a, g) { return a.concat(g.items.map(function (x) { return { acct: g.acct, row: x[0], name: x[1] }; })); }, [])
+    .filter(function (x) { return x.acct === acct && x.row === row; })[0];
+  return it ? it.name : '';
+}
+function envKeyName_(n) { return String(n || '').replace(/（.*?）|\(.*?\)|／.*$/g, '').replace(/平攤|攤提/g, '').trim(); }
+function borrowsOpen_(y) {
+  const out = [], repaid = {};
+  [y - 1, y].forEach(function (yy) { if (ss_(yy)) readLog_(yy).forEach(function (l) { if (l.type === '調用歸還') repaid[l.data] = (repaid[l.data] || 0) + l.amount; }); });
+  [y - 1, y].forEach(function (yy) {
+    if (!ss_(yy)) return;
+    const log = readLog_(yy);
+    log.forEach(function (l) {
+      if (l.type !== '調用') return;
+      const id = yy + ':' + l.row, back = repaid[id] || 0;
+      if (l.amount - back > 0) out.push({ id: id, y: yy, m: l.m, date: l.date, name: l.name, acct: l.acct, key: l.target, amount: l.amount - back, cat: l.note });
+    });
+  });
+  return out;
+}
+function envRaw_(y) {
+  return cached_('ENV2_' + y, ttlFor_(y, 12), function () {
+    const out = [];
+    (ENV[y] || []).forEach(function (a) {
+      const sh = ss_(y).getSheetByName(a.sheet), v = sh.getRange(1, 1, 70, 30).getValues();
+      const n = function (r, c) { return Math.round(num_((v[r - 1] || [])[c - 1])); };   // 逐月取整數，和表上顯示一致
+      const row12 = function (r) { const p = []; for (let i = 0; i < 12; i++) p.push(n(r, a.payCol + i)); return p; };
+      const items = a.rows.map(function (row) {
+        const alloc = []; for (let i = 0; i < 12; i++) alloc.push(n(row + a.allocOffset, a.allocCol + i));
+        const attr = Object.keys(a.attr || {}).filter(function (k) { return a.attr[k] === row; }).map(function (k) {
+          return { name: String(v[+k - 1][0] || '').replace(/（.*$/, ''), pay: row12(+k) };
+        });
+        return { key: a.acct + ':' + row, acct: a.acct, row: row, name: envName_(y, a.acct, row) || String(v[row - 1][0] || ''), pay: row12(row), alloc: alloc, attr: attr };
+      });
+      const lines = (a.lines || []).map(function (L) { return { row: L.row, label: L.label, borrow: !!L.borrow, pay: row12(L.row) }; });
+      out.push({ acct: a.acct, sheet: a.sheet, items: items, lines: lines, dep: a.depRow ? (function () { const p = []; for (let i = 0; i < 12; i++) p.push(n(a.depRow, a.allocCol + i)); return p; })() : null, bal: row12(a.balRow), opening: a.opening ? n(a.opening.row, a.opening.col) : 0,
+                 openingLabel: a.opening ? a.opening.label : '', carryIn: !!a.carryIn, carryActual: a.carryIn ? n(3, 2) : 0 });
+    });
+    return out;
+  });
+}
+function getEnvelopes_(y, m) {
+  y = +y; m = +m;
+  const raw = envRaw_(y), sumTo = function (arr, k) { let s = 0; for (let i = 0; i < k; i++) s += arr[i] || 0; return s; };
+  // 2027 的永豐信封，期初＝2026 年底各信封預估餘額（依名稱結轉）
+  const carry = {};
+  if (raw.some(function (a) { return a.carryIn; }) && ENV[y - 1] && ss_(y - 1)) {
+    getEnvelopes_(y - 1, 12).accounts.forEach(function (a) { a.items.forEach(function (it) { carry[envKeyName_(it.name)] = (carry[envKeyName_(it.name)] || 0) + it.yearEnd; }); });
+  }
+  const unpaid = {};
+  safe_(function () { getPrepaid_(y, m).due.forEach(function (x) { if (x.due && !x.paid) unpaid[x.key] = true; }); });
+  const borrows = borrowsOpen_(y);
+  const crossRepaid = {};
+  readLog_(y).forEach(function (l) { if (l.type === '調用歸還' && String(l.data).indexOf((y - 1) + ':') === 0) crossRepaid[l.acct] = (crossRepaid[l.acct] || 0) + l.amount; });
+  const accounts = raw.map(function (a) {
+    const items = a.items.map(function (it) {
+      const c = a.carryIn ? Math.round(carry[envKeyName_(it.name)] || 0) : 0;
+      const out = it.pay.map(function (p, i) { return p + it.attr.reduce(function (s, x) { return s + x.pay[i]; }, 0); });
+      const borrowed = borrows.filter(function (b) { return b.key === it.key && b.y === y; }).reduce(function (s, b) { return s + b.amount; }, 0);
+      const balance = c + sumTo(it.alloc, m) - sumTo(out, m) - borrowed;               // 本月底（本月應繳視為已繳）
+      const yearEnd = c + sumTo(it.alloc, 12) - sumTo(out, 12) - borrowed;
+      let run = balance, low = balance, next = null;
+      const pend = unpaid[it.key] ? it.pay[m - 1] : 0;
+      if (pend > 0) next = { m: m, amount: pend };
+      for (let k = m; k < 12; k++) { run += it.alloc[k] - out[k]; if (run < low) low = run; if (!next && it.pay[k] > 0) next = { m: k + 1, amount: it.pay[k] }; }
+      const attrNote = it.attr.map(function (x) { const t = sumTo(x.pay, m); return t ? x.name + ' $' + fmt_(t) : ''; }).filter(Boolean);
+      return { key: it.key, acct: it.acct, name: it.name, carry: c, allocYear: sumTo(it.alloc, 12), allocYTD: sumTo(it.alloc, m),
+               paidYTD: sumTo(out, m), attrNote: attrNote, pending: pend, borrowed: borrowed, balance: balance, yearEnd: yearEnd,
+               nextAlloc: m < 12 ? it.alloc[m] : 0, nextPay: m < 12 ? out[m] : 0, safe: Math.max(0, Math.min(low, balance)), next: next };
+    });
+    const openThis = borrows.filter(function (b) { return b.y === y && b.acct === a.acct; }).reduce(function (s, b) { return s + b.amount; }, 0);
+    const lineVal = function (L, k) {   // 帳戶裡的錢「被這一列拿走」多少（負數），已扣掉 App 調用（那部分算在信封上）
+      let t = sumTo(L.pay, k);
+      if (L.borrow) t = t - openThis + (crossRepaid[a.acct] || 0);
+      return -t;
+    };
+    const lines = a.lines.map(function (L) { return { label: L.label, now: lineVal(L, m), yearEnd: lineVal(L, 12) }; }).filter(function (L) { return L.now || L.yearEnd; });
+    const envSum = items.reduce(function (s, x) { return s + x.balance; }, 0), envYE = items.reduce(function (s, x) { return s + x.yearEnd; }, 0);
+    const actual = a.bal[m - 1], actualYE = a.bal[11];
+    const lineNow = lines.reduce(function (s, L) { return s + L.now; }, 0), lineYE = lines.reduce(function (s, L) { return s + L.yearEnd; }, 0);
+    // 緩衝底金：有存入表時＝累計存入 − 累計分配到各信封（和表上一致）；沒有時用帳戶實際倒推
+    const allocSum = function (k) { return a.items.reduce(function (s, it) { return s + sumTo(it.alloc, k); }, 0); };
+    const buffer = a.dep ? sumTo(a.dep, m) - allocSum(m) + a.opening : actual - envSum - lineNow;
+    const bufferYE = a.dep ? sumTo(a.dep, 12) - allocSum(12) + a.opening : actualYE - envYE - lineYE;
+    const tail = actual - envSum - buffer - lineNow, tailYE = actualYE - envYE - bufferYE - lineYE;   // 小數尾差
+    // 需要底金沖銷的＝到年底仍然透支的信封；其他目前為負、年底會回正的只是暫時超前支付
+    const neg = items.filter(function (x) { return x.yearEnd < 0; });
+    const negSum = neg.reduce(function (s, x) { return s + Math.min(0, x.balance); }, 0), negYE = neg.reduce(function (s, x) { return s + x.yearEnd; }, 0);
+    return { acct: a.acct, items: items, envSum: envSum, envYearEnd: envYE, actual: actual, actualYearEnd: actualYE, lines: lines,
+             buffer: buffer, bufferYearEnd: bufferYE, tail: tail, tailYearEnd: tailYE, overdraft: neg.map(function (x) { return x.name; }), overdraftSum: negSum, overdraftSumYE: negYE,
+             ahead: items.filter(function (x) { return x.balance < 0 && x.yearEnd >= 0; }).map(function (x) { return x.name; }),
+             bufferAfterOffset: buffer + negSum, bufferAfterOffsetYE: bufferYE + negYE,
+             opening: a.opening, openingLabel: a.openingLabel,
+             carryTotal: items.reduce(function (s, x) { return s + x.carry; }, 0), carryActual: a.carryIn ? a.carryActual : null };
+  });
+  return { y: y, m: m, accounts: accounts, borrows: borrows };
+}
+// ---- 調用與歸還 ----
+function borrowRowFor_(y, key) {
+  const name = key.split(':')[0];
+  const cfg = (ENV[y] || []).filter(function (a) { return a.acct === name; })[0] || (ENV[y] || [])[(ENV[y] || []).length - 1];
+  return cfg ? { sheet: cfg.sheet, row: cfg.borrowRow, col0: cfg.payCol, acct: cfg.acct } : null;
+}
+function addBorrowCell_(y, m, cfg, delta) {
+  const r = ss_(y).getSheetByName(cfg.sheet).getRange(cfg.row, cfg.col0 + m - 1);
+  r.setValue(num_(r.getValue()) + delta);
+}
+function borrowEnvelope_(a) {
+  const t = parseDate_(todayStr_()), y = t.y, m = t.m, amt = Math.round(num_(a.amount));
+  if (!amt || amt <= 0) throw new Error('請輸入調用金額');
+  ensureSchema2_(y);
+  const env = getEnvelopes_(y, m), it = env.accounts.reduce(function (s, x) { return s.concat(x.items); }, []).filter(function (x) { return x.key === a.key; })[0];
+  if (!it) throw new Error('找不到這個信封');
+  if (amt > it.safe && !a.force) throw new Error('超過可安全調用的 $' + fmt_(it.safe) + '，借出後 ' + (it.next ? it.next.m + ' 月繳費時會不夠' : '年底前會不夠'));
+  const cfg = borrowRowFor_(y, a.key);
+  const before = readTop_(y, m).budget;
+  addBorrowCell_(y, m, cfg, amt);
+  SpreadsheetApp.flush(); bumpVer_();
+  const after = readTopRaw_(y, m).budget, absorbed = Math.max(0, Math.min(amt, Math.round(after - before)));
+  const cat = CATS.indexOf(a.cat) >= 0 ? a.cat : '食物';
+  appendLog_(y, { type: '調用', date: todayStr_(), m: m, name: it.name, amount: amt, acct: cfg.acct, target: a.key, note: cat,
+                  data: JSON.stringify({ absorbed: absorbed, extra: amt - absorbed, cat: cat, reason: a.note || '' }) });
+  return { ok: true, message: '已從「' + it.name + '」調用 $' + fmt_(amt) + ' 到日常，' + cat + '預算 +$' + fmt_(amt) + '；下個月發薪日提醒歸還' };
+}
+function borrowExtra_(y, m) {   // 調用加到科目預算的部分（App 層）
+  return readLog_(y).filter(function (l) { return l.type === '調用' && l.m === m; }).map(function (l) { let d = {}; try { d = JSON.parse(l.data || '{}'); } catch (e) {} return { cat: d.cat || l.note, extra: num_(d.extra) }; });
+}
+function repayBorrow_(a) {
+  const t = parseDate_(todayStr_()), y = t.y, m = t.m;
+  const b = borrowsOpen_(y).filter(function (x) { return x.id === a.id; })[0];
+  if (!b) throw new Error('這筆調用已經歸還');
+  const amt = Math.round(num_(a.amount || b.amount));
+  ensureSchema2_(y);
+  let cfg = borrowRowFor_(y, b.key);
+  if (b.y !== y) {   // 跨年度：歸還到今年這個項目所在的帳戶
+    const hit = envRaw_(y).filter(function (a2) { return a2.items.some(function (it) { return envKeyName_(it.name) === envKeyName_(b.name); }); })[0];
+    cfg = borrowRowFor_(y, (hit ? hit.acct : '永豐') + ':0');
+  }
+  addBorrowCell_(y, m, cfg, -amt);
+  SpreadsheetApp.flush(); bumpVer_();
+  appendLog_(y, { type: '調用歸還', date: todayStr_(), m: m, name: b.name, amount: amt, acct: cfg.acct, target: b.key, data: b.id });
+  return { ok: true, message: '已記錄歸還「' + b.name + '」$' + fmt_(amt) + '（從日常戶轉回' + cfg.acct + '）' };
 }
 
 // ===== 8. 紀錄 =====
@@ -1239,6 +1799,7 @@ function dailyCheck_() {
       else if (!x.paid && (x.dueDate === tmr || x.dueDate === s)) msgs.push((x.dueDate === s ? '今天' : '明天') + '到期：' + x.name + ' $' + fmt_(x.planned) + '（' + x.acct + '）');
     });
   });
+  safe_(function () { borrowsOpen_(t.y).filter(function (b) { return b.y < t.y || b.m < t.m; }).forEach(function (b) { if (dt.getDay() === 0 || t.d <= 6) msgs.push('待歸還調用：' + b.name + ' $' + fmt_(b.amount) + '，轉回後請在 App 按「已歸還」。'); }); });
   getDebts_(t.y).forEach(function (dbt) { if (dt.getDay() === 0 || t.d <= 6) msgs.push('待回補缺口：' + dbt.name + ' $' + fmt_(dbt.amount) + '，補上後請在 App 按「已補上」。'); });
   if (t.d <= 5 && !allocDoneAt_(t.y, t.m)) msgs.push('本月薪資分配還沒完成，請到 App「今日」頁查看各帳戶要轉多少。');
   if (d.daysLeft === 1) msgs.push('今天是月底，記得做滿月盤點。');
@@ -1816,6 +2377,11 @@ nav#nav{order:3;flex-shrink:0;background:var(--card);border-top:1px solid var(--
 input.f,select.f{height:44px;border-radius:12px;border:1px solid var(--line2);padding:0 12px;width:100%;background:var(--card)}
 /* 記帳 */
 .entry{--main:var(--blue);--soft:var(--blueSoft);--tint:var(--blueInk);--fillC:#C9D8F6;--pendC:#A9C1F2;--overC:#E58A80;--overP:#F4BDB6}
+.entry.ecard-mode{--main:#6B4FA0;--soft:#EFEAF8;--tint:#4B347A;--fillC:#DCD2F0;--pendC:#B9A6E0;--overC:#B42318;--overP:#F4BDB6;--onMain:#FFFFFF}
+html[data-theme="dark"] .entry.ecard-mode{--main:#A88BE0;--soft:#2A2240;--tint:#CDB9F2;--fillC:#3D3160;--pendC:#5A4790;--overC:#F4ADA5;--overP:#6B2E29;--onMain:#0B1016}
+.seg.ecb.on{border:none;background:#6B4FA0;color:#fff;font-weight:700}
+html[data-theme="dark"] .seg.ecb.on{background:#A88BE0;color:#0B1016}
+.amt-e{color:#6B4FA0;font-weight:700} html[data-theme="dark"] .amt-e{color:#CDB9F2}
 .entry.pre-mode{--main:var(--green);--soft:var(--greenSoft);--tint:var(--greenInk);--onMain:#FFFFFF}
 html[data-theme="dark"] .entry.pre-mode{--onMain:#0B1016}
 .seg.preb.on{border:none;background:var(--green);color:var(--onMain);font-weight:700}
@@ -1914,6 +2480,8 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
     <section class="view" id="v-cat"></section>
     <section class="view" id="v-records"></section>
     <section class="view" id="v-assets"></section>
+    <section class="view" id="v-plan"></section>
+    <section class="view" id="v-env"></section>
   </main>
   <aside class="view entry" id="v-entry"></aside>
 </div>
@@ -2110,7 +2678,7 @@ function show(view) {
   document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('active'); });
   const target = view === 'cat' ? 'v-cat' : 'v-' + view;
   $(target).classList.add('active');
-  document.querySelectorAll('.navbtn').forEach(function (b) { b.classList.toggle('on', b.dataset.view === (view === 'cat' ? 'charts' : view)); });
+  document.querySelectorAll('.navbtn').forEach(function (b) { b.classList.toggle('on', b.dataset.view === (view === 'cat' ? 'charts' : ((view === 'plan' || view === 'env') ? 'assets' : view))); });
   document.getElementById('app').classList.toggle('entry-mode', view === 'entry');
   resetScroll();
   if (view === 'today') loadToday();
@@ -2133,7 +2701,8 @@ function catBudgetInfo() {
   const rem = c.budget - c.total, after = rem - add;
   const todayLeft = (c.allowance != null ? c.allowance : 0) - (c.today || 0);
   const daysAfter = Math.max(1, (d.daysLeft || 1) - 1);
-  return { c: c, add: add, rem: rem, after: after, isToday: isToday,
+  const cashAdd = E.pay === '現金' ? add : 0, cashRem = c.budget - (c.cash || 0);
+  return { c: c, add: add, rem: rem, after: after, isToday: isToday, cashRem: cashRem, cashAfter: cashRem - cashAdd, cashAdd: cashAdd,
            allowance: c.allowance || 0, today: c.today || 0, todayLeft: todayLeft, todayAfter: todayLeft - (isToday ? add : 0),
            nextAllowance: Math.max(0, rem - (isToday ? add : 0)) / daysAfter,
            usedPct: c.budget ? Math.min(100, c.total / c.budget * 100) : 0,
@@ -2155,16 +2724,18 @@ function renderEntry() {
   const pre = E.pay === '預扣';
   el.classList.toggle('card-mode', E.pay === '信用卡');
   el.classList.toggle('pre-mode', pre);
+  el.classList.toggle('ecard-mode', E.pay === '一卡通');
   const isToday = E.date === f.today;
   const leftTxt = S.dash ? '$' + fmt(S.dash.left) : '…';
   let h = '';
   if (S.queue && S.queue.length) h += '<div class="qbar">' + S.queue.length + ' 筆離線記帳等待上傳<button class="chip" data-act="flush" style="height:32px">立即上傳</button></div>';
   h += '<div class="row"><div class="col"><span class="sub">' + (S.dash ? S.dash.y + '年' + S.dash.m + '月｜' : '') + '本月還能花</span><span style="font-size:20px;font-weight:700">' + leftTxt + '</span></div>' +
     '<div style="display:flex;gap:6px;align-items:center">' + themeBtn(40) + '<button class="datebtn ' + (isToday ? '' : 'past') + '" data-act="date">' + (isToday ? '今天 ' : '補記 ') + md(E.date) + '（' + wk(E.date) + '）</button></div></div>';
-  h += '<div class="grid3" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-top:12px;gap:8px">' +
+  h += '<div class="grid3" style="grid-template-columns:repeat(4,minmax(0,1fr));margin-top:12px;gap:6px">' +
     '<button class="seg cash ' + (E.pay === '現金' ? 'on' : '') + '" data-act="pay" data-v="現金">現金</button>' +
     '<button class="seg cardb ' + (E.pay === '信用卡' ? 'on' : '') + '" data-act="pay" data-v="信用卡">信用卡</button>' +
-    '<button class="seg preb ' + (pre ? 'on' : '') + '" data-act="pay" data-v="預扣">預扣帳戶</button></div>';
+    '<button class="seg ecb ' + (E.pay === '一卡通' ? 'on' : '') + '" data-act="pay" data-v="一卡通">一卡通</button>' +
+    '<button class="seg preb ' + (pre ? 'on' : '') + '" data-act="pay" data-v="預扣">預扣</button></div>';
   if (pre) return renderPrepaidEntry(el, h);
   const items = f.items[E.cat] || [];
   const bi = catBudgetInfo();
@@ -2180,12 +2751,25 @@ function renderEntry() {
         (bi.todayLeft >= 0 ? '今天還剩 <b>$' + fmt(bi.todayLeft) + '</b>' : '<span class="warn">今天已超出 $' + fmt(-bi.todayLeft) + '</span>') + '</div>' +
       '<div class="binfo">本月已用 <b>$' + fmt(bi.c.total) + '</b>（' + Math.round(bi.c.total / bi.c.budget * 100) + '%）｜' +
         (bi.rem >= 0 ? '本月剩 <b>$' + fmt(bi.rem) + '</b>' : '<span class="warn">本月已超支 $' + fmt(-bi.rem) + '</span>') + '</div>';
+    info += '<div class="binfo">現金已用 <b>$' + fmt(bi.c.cash || 0) + '</b>｜刷卡已用 <b>$' + fmt(bi.c.card || 0) + '</b>｜' +
+      (bi.cashRem >= 0 ? '現金部位剩 <b>$' + fmt(bi.cashRem) + '</b>' : '<span class="warn">現金部位已超出 $' + fmt(-bi.cashRem) + '</span>') +
+      (bi.cashAdd ? '（記完後 ' + (bi.cashAfter >= 0 ? '<b>$' + fmt(bi.cashAfter) + '</b>' : '<span class="warn">超出 $' + fmt(-bi.cashAfter) + '</span>') + '）' : '') + '</div>';
     if (bi.add) {
       info += '<div class="binfo">' + (bi.after < 0 ? '<span class="warn">記完後本月將超出預算 $' + fmt(-bi.after) + '</span>' :
         (bi.isToday ? (bi.todayAfter >= 0 ? '記完後今天還剩 <b>$' + fmt(bi.todayAfter) + '</b>' : '<span class="warn">記完後今天超出 $' + fmt(-bi.todayAfter) + '</span>，明天起每日額度約 <b>$' + fmt(bi.nextAllowance) + '</b>') : '記完後本月剩 <b>$' + fmt(bi.after) + '</b>')) + '</div>';
     } else if (bi.todayLeft < 0) info += '<div class="binfo">明天起每日額度約 <b>$' + fmt(bi.nextAllowance) + '</b></div>';
   }
-  h += '<div class="amount">' + bar + '<div style="font-size:12px;font-weight:500;color:var(--tint)">' + (E.pay === '現金' ? '計入：現金實支' : '計入：刷卡實支（' + (+E.date.slice(8, 10) <= 22 ? '本期帳單，次月 6 日扣款' : '下期帳單，下下月 6 日扣款') + '）') + '</div>' + info + '<div class="expr">' + esc(exprDisplay(E.amt).small) + '</div><div class="v">$' + exprDisplay(E.amt).big + '</div></div>';
+  let ecInfo = '';
+  if (E.pay === '一卡通') {
+    const eb = S.dash ? S.dash.ecard : null, v = evalExpr(E.amt), add = isNaN(v) ? 0 : Math.max(0, Math.round(v));
+    if (eb === null || eb === undefined) ecInfo = '<div class="binfo">還沒有一卡通餘額 <button class="chip" data-act="ecal" style="height:28px;font-size:12px;padding:0 10px">校正餘額</button></div>';
+    else {
+      const need = add > eb ? Math.ceil((add - eb) / 500) * 500 : 0;
+      ecInfo = '<div class="binfo">一卡通餘額約 <b>$' + fmt(eb) + '</b>' + (add ? (need ? '｜<span class="warn">餘額不足，會自動加值 $' + fmt(need) + '（記成刷卡）</span>，付款後約 $' + fmt(eb + need - add) : '｜付款後約 <b>$' + fmt(eb - add) + '</b>') : '') +
+        ' <button class="chip" data-act="ecal" style="height:28px;font-size:12px;padding:0 10px">校正</button></div>';
+    }
+  }
+  h += '<div class="amount">' + bar + '<div style="font-size:12px;font-weight:500;color:var(--tint)">' + (E.pay === '現金' ? '計入：現金實支' : (E.pay === '一卡通' ? '計入：一卡通（扣科目預算，不算現金、不進信用卡帳單）' : '計入：刷卡實支（' + (+E.date.slice(8, 10) <= 22 ? '本期帳單，次月 6 日扣款' : '下期帳單，下下月 6 日扣款') + '）')) + '</div>' + ecInfo + info + '<div class="expr">' + esc(exprDisplay(E.amt).small) + '</div><div class="v">$' + exprDisplay(E.amt).big + '</div></div>';
   // 快速記帳範本
   const q = [];
   if (f.last) q.push({ t: '↺ 再記一次：' + f.last.item + ' $' + fmt(f.last.amount), d: f.last });
@@ -2245,6 +2829,13 @@ $('v-entry').addEventListener('click', function (e) {
   else if (a === 'pp') { E.ppKey = v; E.amt = ''; E.ppTouched = false; }
   else if (a === 'quick') { const q = S.quickList[+b.dataset.i].d; E.cat = q.cat; E.item = q.item; E.pay = q.pay; E.amt = String(q.amount); E.custom = (S.form.items[q.cat] || []).indexOf(q.item) < 0; E.customText = E.custom ? q.item : ''; toast('已帶入：' + q.item + ' $' + fmt(q.amount) + '，確認後按「記一筆」', 1800); }
   else if (a === 'flush') return flushQueue(true);
+  else if (a === 'ecal') {
+    const cur = S.dash && S.dash.ecard != null ? S.dash.ecard : '';
+    const v = prompt('一卡通目前實際餘額（可在超商、捷運站或一卡通 App 查）：', cur);
+    if (v === null) return;
+    const n = Math.round(evalExpr(v)); if (isNaN(n) || n < 0) return toast('金額不正確');
+    return call('setEcard', { balance: n }).then(function (r) { if (S.dash) S.dash.ecard = r.balance; toast(r.message); renderEntry(); }).catch(err);
+  }
   else if (a === 'date') return openDatePicker();
   else if (a === 'submit') return submitEntry();
   renderEntry();
@@ -2313,7 +2904,8 @@ function submitEntry() {
   const item = E.custom ? (E.customText || '').trim() : E.item;
   if (E.custom && !item) return toast('請輸入消費項目');
   btn.disabled = true; btn.textContent = '記錄中…';
-  const args = { date: E.date, cat: E.cat, item: item, amount: amt, pay: E.pay, note: E.note || '' };
+  const exprNote = hasOp(E.amt) ? '〔' + E.amt.replace(/−/g, '-') + '〕' : '';
+  const args = { date: E.date, cat: E.cat, item: item, amount: amt, pay: E.pay, note: ((E.note || '') + (E.note && exprNote ? ' ' : '') + exprNote) };
   const applyLocal = function () {
     if (!S.dash) return;
     const sm = +E.date.slice(0, 4) === S.dash.y && +E.date.slice(5, 7) === S.dash.m;
@@ -2324,7 +2916,7 @@ function submitEntry() {
   };
   call('add', args).then(function (r) {
     toast(r.message + (r.warnFull ? '（本月已接近 500 筆上限）' : ''), 3200);
-    applyLocal(); if (S.dash) S.dash.left = r.left;
+    applyLocal(); if (S.dash) { S.dash.left = r.left; if (r.ecard !== undefined) S.dash.ecard = r.ecard; }
     S.form.last = { cat: E.cat, item: item, pay: E.pay, amount: amt };
     E.amt = ''; E.note = ''; E.custom = false; E.customText = '';
     renderEntry(); afterWrite();
@@ -2380,7 +2972,8 @@ function renderToday() {
   h += '</div><div class="grid2"><div class="card"><b style="font-size:15px">今日建議</b>' + d.tips.map(function (t) {
     return '<div class="tip">' + (ICON[t.level] || ICON.info) + '<div class="col" style="flex:1"><span>' + esc(t.text) + '</span>' +
       (t.action === 'circle' ? '<button class="chip" data-act="circle" style="height:36px;align-self:flex-start;margin-top:4px">我已圈存</button>' : '') +
-      (t.action === 'debt' ? '<button class="chip" data-act="debt" data-row="' + t.row + '" data-y="' + t.y + '" style="height:36px;align-self:flex-start;margin-top:4px">已補上</button>' : '') + '</div></div>';
+      (t.action === 'debt' ? '<button class="chip" data-act="debt" data-row="' + t.row + '" data-y="' + t.y + '" style="height:36px;align-self:flex-start;margin-top:4px">已補上</button>' : '') +
+      (t.action === 'repay' ? '<button class="chip" data-act="repay" data-id="' + esc(t.id) + '" style="height:36px;align-self:flex-start;margin-top:4px">已歸還</button>' : '') + '</div></div>';
   }).join('') + '</div>';
   const iv = d.invest;
   if (iv.mode === 'emergency') {
@@ -2391,11 +2984,17 @@ function renderToday() {
     h += '<div class="card"><div class="row"><b style="font-size:15px">可投資金額</b><span class="tag ok okbg">緊急備用金已補滿</span></div><div class="big ok">$' + fmt(iv.amount) + '</div><span class="sub">' + esc(iv.text) + '</span></div>';
   }
   h += '</div>';
+  if (d.closeInfo) {
+    const ci = d.closeInfo;
+    h += '<div class="card ' + (ci.done ? 'okbg' : '') + '"><div class="row"><b style="font-size:15px">' + ci.m + ' 月月底結帳</b><span class="tag ' + (ci.done ? 'ok okbg' : 'fast fastbg') + '">' + (ci.done ? '已完成 ✓' : ci.ok + ' / ' + ci.total + ' 項') + '</span></div>' +
+      '<div class="bar" style="margin:8px 0"><i style="width:' + Math.round(ci.ok / ci.total * 100) + '%;background:var(--green)"></i></div>' +
+      '<button class="chip" data-act="close" data-y="' + ci.y + '" data-m="' + ci.m + '" style="height:36px">' + (ci.done ? '查看結帳清單' : '打開結帳清單') + '</button></div>';
+  }
   if (d.prepaid && d.prepaid.due.length) {
     const pp = d.prepaid, paidN = pp.due.filter(function (x) { return x.paid; }).length;
     h += '<div class="card"><div class="row"><b style="font-size:15px">本月應繳（預扣帳戶）</b><span class="tag ' + (pp.overdue ? 'over overbg' : (pp.unpaid ? 'fast fastbg' : 'ok okbg')) + '">' + (pp.overdue ? pp.overdue + ' 項逾期' : (pp.unpaid ? '還有 ' + pp.unpaid + ' 項未繳' : '全部繳清')) + '</span></div>' +
       '<div style="margin:8px 0">' + bar(pp.totalPaid, 0, Math.max(pp.totalPlanned, pp.totalPaid)).replace('class="c"', 'class="c" style="background:var(--green)"') + '</div>' +
-      '<div class="sub" style="font-size:12px;margin-bottom:6px">已繳 $' + fmt(pp.totalPaid) + ' ／ 應繳 $' + fmt(pp.totalPlanned) + '（' + paidN + '/' + pp.due.length + ' 項）</div>' +
+      '<div class="row" style="margin-bottom:6px"><span class="sub" style="font-size:12px">已繳 $' + fmt(pp.totalPaid) + ' ／ 應繳 $' + fmt(pp.totalPlanned) + '（' + paidN + '/' + pp.due.length + ' 項）</span><button class="chip" data-act="envgo" style="height:30px;font-size:12px">各項目水位 ›</button></div>' +
       pp.due.map(function (x) {
         const st = x.paid ? '<span class="ok" style="font-size:12px">✓ ' + md(x.paidDate) + ' $' + fmt(x.paid) + '</span>' :
           '<button class="chip" data-act="paynow" data-key="' + esc(x.key) + '" style="height:34px;font-size:13px;' + (x.status === 'overdue' ? 'border:2px solid var(--red);color:var(--red)' : '') + '">' + (x.status === 'overdue' ? '逾期・去繳費' : '記錄繳費') + '</button>';
@@ -2408,6 +3007,10 @@ function renderToday() {
   el.innerHTML = h;
 }
 $('v-today').addEventListener('click', function (e) {
+  const cl = e.target.closest('[data-act="close"]'); if (cl) return openClose(+cl.dataset.y, +cl.dataset.m);
+  if (e.target.closest('[data-act="envgo"]')) return openEnv(todayYM());
+  const rp = e.target.closest('[data-act="repay"]');
+  if (rp) { if (!confirm('確定已從日常戶轉回？')) return; rp.disabled = true; return call('repay', { id: rp.dataset.id }).then(function (r) { toast(r.message, 3000); clearCaches(); afterWrite(); loadToday(true); }).catch(err); }
   const pn = e.target.closest('[data-act="paynow"]');
   if (pn) { S.e.pay = '預扣'; S.e.ppKey = pn.dataset.key; S.e.amt = ''; S.e.ppTouched = false; S.e.date = S.form.today; show('entry'); renderEntry(); return; }
   const rf = e.target.closest('[data-act="refresh"]');
@@ -2853,7 +3456,7 @@ function catStep(k) {
   S.cat = d.order[j]; loadCat();
 }
 function entryRow(r, withFlag) {
-  const cls = r.pay === '現金' ? 'amt-c' : 'amt-k';
+  const cls = r.pay === '現金' ? 'amt-c' : (r.pay === '一卡通' ? 'amt-e' : 'amt-k');
   if (withFlag && r.flag) {
     return '<div class="li flag" style="flex-direction:column;align-items:stretch;gap:4px"><div class="row">' + ICON.warn.replace('#C77700', '#B42318') +
       '<div class="col" style="flex:1"><b style="color:var(--redInk)">' + esc(r.item) + '</b><span style="font-size:12px;color:var(--redInk)">' + md(r.date) + '・' + r.pay + '</span></div><b style="color:var(--red)">$' + fmt(r.amount) + '</b></div>' +
@@ -2909,7 +3512,8 @@ function renderRecords() {
     return true;
   });
   let h = monthHeader(d, 'rc', '共 ' + d.rows.length + ' 筆｜$' + fmt(d.total)) +
-    '<button class="chip" data-act="bill" style="width:100%;height:42px;margin-bottom:10px;border:1px solid var(--cardC);color:var(--cardInk);font-weight:700">信用卡帳單對帳</button>';
+    '<div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-bottom:10px"><button class="chip" data-act="bill" style="width:100%;height:42px;border:1px solid var(--cardC);color:var(--cardInk);font-weight:700">信用卡帳單對帳</button>' +
+    '<button class="chip" data-act="invoice" style="width:100%;height:42px;border:1px solid var(--blue);color:var(--blue);font-weight:700">電子發票比對</button></div>';
   h += '<input class="f" id="recSearch" type="search" placeholder="搜尋項目或備註" value="' + esc(q) + '" style="border-radius:22px;margin-bottom:10px">';
   h += '<div class="items" style="margin-bottom:12px">' + ['全部', '奉獻', '食物', '教育', '油料', '娛樂', '其他', '國旅', '只看信用卡'].map(function (c) { return '<button class="chip ' + (fl === c ? 'on' : '') + '" data-act="filter" data-v="' + c + '" style="height:36px">' + c + '</button>'; }).join('') + '</div>';
   const groups = {};
@@ -2918,7 +3522,7 @@ function renderRecords() {
     const sum = groups[day].reduce(function (s, r) { return s + r.amount; }, 0);
     h += '<div class="sub" style="font-size:12px;font-weight:500;margin:4px 0 6px">' + md(day) + '（' + wk(day) + '）　$' + fmt(sum) + '</div><div class="list">' +
       groups[day].map(function (r) {
-        return '<button class="li" data-act="edit" data-row="' + r.row + '" style="width:100%;border-left:none;border-right:none;border-top:none;background:var(--card);text-align:left"><div class="col" style="flex:1;gap:1px"><span style="font-size:15px;font-weight:500">' + esc(r.item) + '</span><span class="sub" style="font-size:12px">' + esc(r.cat) + '・' + r.pay + (r.note ? '・' + esc(r.note) : '') + '</span></div><span class="' + (r.pay === '現金' ? 'amt-c' : 'amt-k') + '">$' + fmt(r.amount) + '</span></button>';
+        return '<button class="li" data-act="edit" data-row="' + r.row + '" style="width:100%;border-left:none;border-right:none;border-top:none;background:var(--card);text-align:left"><div class="col" style="flex:1;gap:1px"><span style="font-size:15px;font-weight:500">' + esc(r.item) + '</span><span class="sub" style="font-size:12px">' + esc(r.cat) + '・' + r.pay + (r.note ? '・' + esc(r.note) : '') + '</span></div><span class="' + (r.pay === '現金' ? 'amt-c' : (r.pay === '一卡通' ? 'amt-e' : 'amt-k')) + '">$' + fmt(r.amount) + '</span></button>';
       }).join('') + '</div>';
   });
   if (!rows.length) h += '<div class="loading">沒有符合的紀錄</div>';
@@ -2933,6 +3537,7 @@ $('v-records').addEventListener('click', function (e) {
   if (a === 'rc-next') { S.recYM = ymAdd(S.recYM, 1); loadRecords(); }
   if (a === 'filter') { S.recFilter = b.dataset.v; renderRecords(); }
   if (a === 'bill') openBill();
+  if (a === 'invoice') openInvoices();
   if (a === 'edit') openEdit(S.rec.rows.filter(function (r) { return r.row === +b.dataset.row; })[0]);
 });
 function openEdit(r) {
@@ -2942,7 +3547,7 @@ function openEdit(r) {
     '<label class="sub">科目<select class="f" id="edCat">' + cats.map(function (c) { return '<option ' + (c === r.cat ? 'selected' : '') + '>' + c + '</option>'; }).join('') + '</select></label>' +
     '<label class="sub">項目<input class="f" id="edItem" value="' + esc(r.item) + '"></label>' +
     '<label class="sub">金額<input class="f" id="edAmt" inputmode="numeric" value="' + r.amount + '"></label>' +
-    '<label class="sub">支付方式<select class="f" id="edPay"><option ' + (r.pay === '現金' ? 'selected' : '') + '>現金</option><option ' + (r.pay === '信用卡' ? 'selected' : '') + '>信用卡</option></select></label>' +
+    '<label class="sub">支付方式<select class="f" id="edPay"><option ' + (r.pay === '現金' ? 'selected' : '') + '>現金</option><option ' + (r.pay === '信用卡' ? 'selected' : '') + '>信用卡</option><option ' + (r.pay === '一卡通' ? 'selected' : '') + '>一卡通</option></select></label>' +
     '<label class="sub">備註<input class="f" id="edNote" value="' + esc(r.note) + '"></label>' +
     '<div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)"><button class="submit" style="background:var(--card);color:var(--red);border:1px solid var(--red)" data-ed="del">刪除</button><button class="submit" style="background:var(--blue)" data-ed="save">儲存</button></div>' +
     '<button class="chip" data-ed="cancel" style="align-self:center;border:none">取消</button>');
@@ -3141,7 +3746,10 @@ function renderAssetPane() {
 
 function renderAssets() {
   const d = S.asset, c = assetCalc(), el = $('v-assets');
-  let h = monthHeader(d, 'as', '滿月記帳｜月底盤點');
+  let h = monthHeader(d, 'as', '滿月記帳｜月底盤點') +
+    '<div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-bottom:12px"><button class="chip" data-act="closewiz" style="width:100%;height:42px;border:1px solid var(--green);color:var(--green);font-weight:700">' + d.m + ' 月月底結帳</button>' +
+    '<button class="chip" data-act="plan" style="width:100%;height:42px;border:1px solid var(--blue);color:var(--blue);font-weight:700">明年預算試算</button></div>' +
+    '<button class="chip" data-act="env" style="width:100%;height:42px;margin:-4px 0 12px;border:1px solid var(--green);color:var(--green);font-weight:700">預扣信封｜各項目水位與調用</button>';
   h += '<div class="grid2" style="align-items:start"><div><div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)">' +
     '<div class="card"><span class="sub">本月資產總計</span><div class="mid">$' + fmt(c.total) + '</div><span style="font-size:12px;font-weight:500" class="' + (c.missing ? 'fast' : 'ok') + '">' + (c.missing ? '還有 ' + c.missing + ' 項未填' : '已填完整') + '</span></div>' +
     '<div class="card ' + (c.missing ? '' : (c.diff >= 0 ? 'okbg' : 'overbg')) + '"><span class="sub">本月資產增減</span><div class="mid ' + (c.missing ? 'done' : (c.diff >= 0 ? 'ok' : 'over')) + '">' + (c.missing ? '—' : (c.diff >= 0 ? '+' : '') + money(c.diff)) + '</div><span class="sub" style="font-size:12px">' + (c.missing ? '填完才計算' : '上月 $' + fmt(d.prevTotal)) + '</span></div></div>' +
@@ -3177,6 +3785,9 @@ $('v-assets').addEventListener('click', function (e) {
   if (a === 'as-prev') { S.assetYM = ymAdd(S.assetYM, -1); loadAssets(); }
   if (a === 'as-next') { S.assetYM = ymAdd(S.assetYM, 1); loadAssets(); }
   if (a === 'calc') return openCalc(b.dataset.k);
+  if (a === 'closewiz') return openClose(S.asset.y, S.asset.m);
+  if (a === 'plan') return openPlan();
+  if (a === 'env') return openEnv(todayYM());
   if (a === 'at') { S.act = +b.dataset.v; return renderAssetPane(); }
   if (a === 'taxy') { S.taxYear = +b.dataset.v; return renderGoalsTax(S.asset.y, S.asset.m); }
   if (a === 'savemonthly') {
@@ -3252,22 +3863,168 @@ function renderBill(b) {
   $('modalBox').innerHTML = '<div class="row"><button class="iconbtn" data-b="prev" aria-label="上一期">' + ICON.left + '</button><b style="font-size:16px">' + b.y + '年' + b.m + '月6日帳單</b><button class="iconbtn" data-b="next" aria-label="下一期">' + ICON.right + '</button></div>' +
     '<div class="sub" style="font-size:12px;text-align:center">消費期間 ' + md(b.from) + '～' + md(b.to) + '</div>' +
     '<div class="card" style="background:var(--bg);margin:0"><div class="row"><span>App 記錄的刷卡</span><b>$' + fmt(b.recorded) + '</b></div>' + (b.fixed ? '<div class="sub" style="font-size:12px">含固定訂閱／分期 $' + fmt(b.fixed) + '</div>' : '') +
-    '<div class="row" style="margin-top:8px"><span>帳單金額</span><input class="f" id="billAmt" inputmode="numeric" style="width:140px;text-align:right" value="' + (b.bill == null ? '' : b.bill) + '" placeholder="輸入帳單金額"></div>' +
+    '<div class="row" style="margin-top:8px"><span>本期應繳金額<br><span class="sub" style="font-size:11px">（帳單上的總額，你輸入的）</span></span><input class="f" id="billAmt" inputmode="numeric" style="width:140px;text-align:right" value="' + (b.bill == null ? '' : b.bill) + '" placeholder="例如 21345"></div>' +
+    (b.detailTotal != null ? '<div class="sub" style="font-size:12px;margin-top:4px">上次貼上的明細合計 $' + fmt(b.detailTotal) + '（只用來逐筆比對，不會取代上面的應繳金額）</div>' : '') +
     (diffTxt ? '<div style="margin-top:8px;font-size:14px">' + diffTxt + '</div>' : '') + '</div>' +
     '<button class="submit" data-b="save" style="margin:0">儲存帳單金額並比對</button>' +
+    '<div class="card" style="background:var(--bg);margin:0"><b style="font-size:14px">逐筆比對帳單明細</b><div class="sub" style="font-size:12px;line-height:1.5;margin:4px 0 8px">從銀行 App 或電子帳單複製明細貼上，或一行打一筆金額（可含日期、店名）。</div>' +
+    '<textarea class="f" id="billText" rows="5" style="height:auto;padding:10px 12px;line-height:1.5;font-size:16px" placeholder="例如：\n09/24 小北百貨 799\n10/04 全聯 164">' + esc((b.detail || []).map(function (L) { return (L.date ? L.date + ' ' : '') + (L.desc ? L.desc + ' ' : '') + L.amount; }).join('\n')) + '</textarea>' +
+    '<button class="submit" data-b="match" style="margin:8px 0 0">逐筆比對</button><div id="matchRes"></div></div>' +
+    '<div class="card" style="background:var(--bg);margin:0"><b style="font-size:14px">找差異</b><div class="sub" style="font-size:12px;line-height:1.5;margin:4px 0 8px">輸入帳單上對不到的那筆金額（或差額），會在期間前後 3 天的所有紀錄裡找：金額相同、或藏在某天某科目算式裡的。</div>' +
+    '<div class="row"><input class="f" id="findAmt" inputmode="numeric" placeholder="例如 799" value="' + (b.diff ? Math.abs(b.diff) : '') + '"><button class="chip" data-b="find" style="height:44px;flex-shrink:0">搜尋</button></div><div id="findRes"></div></div>' +
     '<div class="sub" style="font-size:12px">這期記錄的刷卡（' + b.rows.length + ' 筆）：</div>' +
-    '<div class="list" style="margin:0;max-height:38vh;overflow:auto">' + (b.rows.length ? b.rows.map(function (r) { return '<div class="li" style="padding:8px 12px"><div class="col" style="flex:1;gap:1px"><span style="font-size:14px">' + esc(r.item) + '</span><span class="sub" style="font-size:11px">' + md(r.date) + '・' + esc(r.cat) + '</span></div><span class="amt-k">$' + fmt(r.amount) + '</span></div>'; }).join('') : '<div class="li sub">這期沒有刷卡紀錄</div>') + '</div>' +
+    '<div class="list" style="margin:0;max-height:38vh;overflow:auto" id="billRows">' + billRowsHTML(b.rows, S.billMatch && S.billMatch.y === b.y && S.billMatch.m === b.m ? S.billMatch : null) + '</div>' +
     '<button class="chip" data-b="close" style="align-self:center">關閉</button>';
   $('modalBox').onclick = function (e) {
     const x = e.target.closest('[data-b]'); if (!x) return;
     const k = x.dataset.b;
     if (k === 'close') return closeModal();
     if (k === 'prev' || k === 'next') return openBill(ymAdd({ y: b.y, m: b.m }, k === 'prev' ? -1 : 1));
+    if (k === 'find') {
+      const v = evalExpr($('findAmt').value); if (isNaN(v) || v <= 0) return toast('請輸入金額');
+      $('findRes').innerHTML = '<div class="sub" style="font-size:12px;margin-top:8px">搜尋中…</div>';
+      call('findAmount', { y: b.y, m: b.m, amount: Math.round(v) }).then(function (r) {
+        $('findRes').innerHTML = r.matches.length ? '<div class="sub" style="font-size:12px;margin:8px 0 4px">找到 ' + r.matches.length + ' 筆可能相關的紀錄：</div>' + r.matches.map(function (x) {
+          const warn = x.pay === '現金' || x.kind === 'term' || !x.inPeriod;
+          return '<div style="padding:8px 10px;margin-bottom:6px;border-radius:10px;background:' + (warn ? 'var(--amberSoft)' : 'var(--card)') + '"><div class="row" style="font-size:14px"><span>' + md(x.date) + '・' + esc(x.cat) + '・' + esc(x.item) + '</span><b class="' + (x.pay === '現金' ? 'amt-c' : 'amt-k') + '">$' + fmt(x.amount) + '</b></div>' +
+            '<div style="font-size:12px;color:' + (warn ? 'var(--amberInk)' : 'var(--sub)') + ';line-height:1.5">' + esc(x.pay) + (x.note ? '｜' + esc(x.note) : '') + '<br>' + x.hints.map(esc).join('；') + '</div></div>';
+        }).join('') + '<div class="sub" style="font-size:11px;line-height:1.5">要修正的話，到「紀錄」頁找到那筆，改支付方式、科目或金額即可。</div>'
+          : '<div class="sub" style="font-size:12px;margin-top:8px">期間內沒有找到 $' + fmt(r.amount) + ' 的紀錄，也不在任何算式裡，很可能是漏記了這筆。</div>';
+      }).catch(err);
+      return;
+    }
+    if (k === 'fix') return doFix(x.dataset.k, +x.dataset.i, +(x.dataset.j || 0));
+    if (k === 'fxcat') {
+      const fx = S.fixAdd, date = $('fxDate').value, item = $('fxItem').value.trim() || '對帳補記';
+      x.disabled = true;
+      return call('add', { date: date, cat: x.dataset.v, item: item, amount: fx.line.amount, pay: '信用卡', note: histNote(date) })
+        .then(function () { toast('已補記 ' + md(date) + '「' + item + '」$' + fmt(fx.line.amount) + '（刷卡）', 2600); clearCaches(); afterWrite(); rematch(); }).catch(err);
+    }
+    if (k === 'match') {
+      const t = $('billText').value; if (!t.trim()) return toast('請先貼上帳單明細');
+      S.billText = t;
+      x.disabled = true; x.textContent = '比對中…';
+      call('matchBill', { y: b.y, m: b.m, text: t }).then(function (r) { S.billMatch = r; x.disabled = false; x.textContent = '逐筆比對'; renderMatch(r); $('billRows').innerHTML = billRowsHTML(b.rows, r); })
+        .catch(function (e) { x.disabled = false; x.textContent = '逐筆比對'; err(e); });
+      return;
+    }
     if (k === 'save') {
       const v = evalExpr($('billAmt').value); if (isNaN(v) || v <= 0) return toast('請輸入帳單金額');
       x.disabled = true; call('setBill', { y: b.y, m: b.m, amount: Math.round(v) }).then(renderBill).catch(err);
     }
   };
+}
+// ---------- 對帳一鍵修正 ----------
+function histNote(dateStr) { return dateStr < '2026-11-01' ? '帳單補登（舊制，錢已由卡費頁扣過）' : '對帳補記'; }
+function removeTerm(note, x) {
+  const n = String(note || '');
+  const m = n.match(/[\(（〔]([^\)）〕]*)[\)）〕]/);
+  if (m) {
+    const parts = m[1].split('+'), i = parts.map(function (p) { return Math.round(Number(p.replace(/[^\d.\-]/g, ''))); }).indexOf(x);
+    if (i >= 0) { parts.splice(i, 1); return n.replace(m[0], parts.length ? m[0].charAt(0) + parts.join('+') + m[0].charAt(m[0].length - 1) : ''); }
+  }
+  return n;
+}
+function lineDate(line, r) {   // 帳單上的「月/日」→ 完整日期（取帳單期間附近的年份）
+  if (line.iso) return line.iso;
+  if (!line.date) return r.to;
+  const p = line.date.split('/'), mo = +p[0], d = +p[1];
+  const fy = +r.from.slice(0, 4), ty = +r.to.slice(0, 4);
+  const y = mo === +r.from.slice(5, 7) ? fy : (mo === +r.to.slice(5, 7) ? ty : ty);
+  return y + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+}
+function recArgs(f, over) {
+  return Object.assign({ y: +f.date.slice(0, 4), m: +f.date.slice(5, 7), row: f.row, date: f.date, cat: f.cat, item: f.item, amount: f.amount, pay: f.pay, note: f.note || '' }, over || {});
+}
+function rematch() {
+  const r = S.billMatch; if (!r || !S.billText) return;
+  call('matchBill', { y: r.y, m: r.m, text: S.billText, nosave: true }).then(function (nr) {
+    S.billMatch = nr; renderMatch(nr);
+    call('bill', { y: r.y, m: r.m }).then(function (b) { S.billRowsData = b.rows; const el = $('billRows'); if (el) el.innerHTML = billRowsHTML(b.rows, nr); });
+  }).catch(err);
+}
+function doFix(kind, i, j) {
+  const r = S.billMatch; if (!r) return;
+  const done = function (msg) { toast(msg, 2600); clearCaches(); afterWrite(); rematch(); };
+  if (kind === 'move' || kind === 'tocard') {
+    const x = r.billOnly[i], f = x.found[j], amt = x.line.amount;
+    if (kind === 'tocard') {
+      return call('update', recArgs(f, { pay: '信用卡', note: (f.note ? f.note + ' ' : '') + (f.date < '2026-11-01' ? '（對帳改為刷卡，帳單補登）' : '（對帳改為刷卡）') }))
+        .then(function () { done('已把 ' + md(f.date) + '「' + f.item + '」$' + fmt(amt) + ' 改成刷卡'); }).catch(err);
+    }
+    if (f.amount - amt < 0) return toast('這筆金額比帳單小，無法移出');
+    const newNote = removeTerm(f.note, amt);
+    call('update', recArgs(f, { amount: f.amount - amt, note: newNote + (newNote === f.note ? '（已移出 ' + amt + ' 改記刷卡）' : '') })).then(function () {
+      return call('add', { date: f.date, cat: f.cat, item: x.line.desc || f.item, amount: amt, pay: '信用卡', note: histNote(f.date) });
+    }).then(function () { done('已從 ' + md(f.date) + '「' + f.cat + '」移出 $' + fmt(amt) + '，改記成刷卡'); }).catch(err);
+    return;
+  }
+  if (kind === 'topup') {
+    const x = r.billOnly[i], date = lineDate(x.line, r);
+    return call('add', { date: date, cat: '一卡通儲值', item: '一卡通自動加值', amount: x.line.amount, pay: '信用卡', note: '對帳補記（一卡通儲值，不扣生活預算）' })
+      .then(function () { done('已記為一卡通儲值 $' + fmt(x.line.amount) + '（' + md(date) + '），不扣生活預算'); }).catch(err);
+  }
+  if (kind === 'add') {
+    const x = r.billOnly[i], date = lineDate(x.line, r);
+    const cats = ['食物', '油料', '娛樂', '其他', '教育', '奉獻', '國旅'];
+    $('fixPanel').innerHTML = '<div class="card" style="margin:8px 0 0;border:2px solid var(--cardC)"><b style="font-size:14px">補記這筆刷卡：$' + fmt(x.line.amount) + '</b>' +
+      '<label class="sub" style="display:block;margin-top:8px">日期<input class="f" type="date" id="fxDate" value="' + date + '"></label>' +
+      '<label class="sub" style="display:block;margin-top:8px">項目<input class="f" id="fxItem" value="' + esc(x.line.desc || '') + '" placeholder="店名或項目"></label>' +
+      '<div class="sub" style="margin-top:8px">科目</div><div class="cats" style="margin-top:6px">' + cats.map(function (c) { return '<button class="chip" data-b="fxcat" data-v="' + c + '">' + c + '</button>'; }).join('') + '</div></div>';
+    S.fixAdd = x; return;
+  }
+  if (kind === 'cash' || kind === 'del' || kind === 'amt') {
+    const rec = r.appOnly[i];
+    if (kind === 'cash') return call('update', recArgs(rec, { pay: '現金' })).then(function () { done('已把 ' + md(rec.date) + '「' + rec.item + '」改成現金'); }).catch(err);
+    if (kind === 'del') { if (!confirm('刪除 ' + md(rec.date) + '「' + rec.item + '」$' + fmt(rec.amount) + '？')) return; return call('delete', recArgs(rec)).then(function () { done('已刪除這筆紀錄'); }).catch(err); }
+    const near = r.billOnly.map(function (x) { return x.line; }).filter(function (L) { return L.date && Math.abs(new Date(lineDate(L, r)) - new Date(rec.date)) <= 3 * 86400000; });
+    const v = prompt('把 ' + md(rec.date) + '「' + rec.item + '」的金額改成：', near.length ? near[0].amount : rec.amount);
+    if (v === null) return;
+    const nv = Math.round(evalExpr(v)); if (isNaN(nv) || nv <= 0) return toast('金額不正確');
+    return call('update', recArgs(rec, { amount: nv, note: (rec.note ? rec.note + ' ' : '') + '（對帳更正，原 ' + rec.amount + '）' })).then(function () { done('已改成 $' + fmt(nv)); }).catch(err);
+  }
+}
+
+function billRowsHTML(rows, mr) {
+  if (!rows.length) return '<div class="li sub">這期沒有刷卡紀錄</div>';
+  const only = mr ? mr.appOnly.map(function (x) { return x.row + '|' + x.date; }) : [];
+  return rows.map(function (r) {
+    const k = only.indexOf(r.row + '|' + r.date), miss = mr && k >= 0, ok = mr && !miss;
+    return '<div class="li" style="padding:8px 12px;flex-wrap:wrap;' + (miss ? 'background:var(--amberSoft)' : '') + '"><div class="col" style="flex:1;gap:1px;min-width:0"><span style="font-size:14px">' + (ok ? '<span class="ok">✓ </span>' : '') + esc(r.item) + '</span><span class="sub" style="font-size:11px">' + md(r.date) + '・' + esc(r.cat) + (miss ? '｜<b class="fast">帳單上沒有這筆</b>' : '') + '</span></div><span class="amt-k">$' + fmt(r.amount) + '</span>' +
+      (miss ? '<div style="display:flex;gap:6px;width:100%;margin-top:6px"><button class="chip" data-b="fix" data-k="cash" data-i="' + k + '" style="height:32px;font-size:12px">改成現金</button><button class="chip" data-b="fix" data-k="amt" data-i="' + k + '" style="height:32px;font-size:12px">改金額</button><button class="chip" data-b="fix" data-k="del" data-i="' + k + '" style="height:32px;font-size:12px;color:var(--red)">刪除</button></div>' : '') + '</div>';
+  }).join('');
+}
+function renderMatch(r) {
+  const box = $('matchRes'); if (!box) return;
+  const extN = r.matched.filter(function (x) { return x.ext; }).length;
+  let h = '<div class="row" style="margin:10px 0 6px;font-size:13px"><span>讀到明細 ' + r.lines + ' 筆，合計 <b>' + money(r.billTotal) + '</b></span><span>對上 <b class="ok">' + r.matched.length + '</b> 筆</span></div>';
+  if (r.billInput != null && r.billInput !== r.billTotal) h += '<div class="sub" style="font-size:12px;line-height:1.5">明細合計和你輸入的應繳金額 $' + fmt(r.billInput) + ' 不同，可能是明細沒有貼完整，或含前期餘額、手續費調整。</div>';
+  h += '<details style="margin:4px 0 8px"><summary class="sub" style="font-size:12px;cursor:pointer">查看讀到的 ' + r.lines + ' 筆明細</summary><div style="font-size:12px;line-height:1.7;margin-top:4px">' +
+    (r.parsed || []).map(function (L) { return (L.date || '—') + '　' + esc(L.desc || '（未註明）') + '　<b>' + money(L.amount) + '</b>'; }).join('<br>') + '</div></details>';
+  if (extN) h += '<div class="sub" style="font-size:12px;margin-bottom:6px">其中 ' + extN + ' 筆是跨期入帳（消費日在帳單期間前後幾天，銀行延後入帳）。</div>';
+  if (r.billOnly.length) {
+    h += '<div style="font-size:13px;font-weight:700;color:var(--red);margin:8px 0 4px">帳單有、App 沒有刷卡紀錄（' + r.billOnly.length + ' 筆）</div>' + r.billOnly.map(function (x) {
+      const i = r.billOnly.indexOf(x);
+      const where = x.found.length ? x.found.map(function (f, j) {
+        const btn = f.kind === 'term' && f.amount > x.line.amount ? '<button class="chip" data-b="fix" data-k="move" data-i="' + i + '" data-j="' + j + '" style="height:32px;font-size:12px;margin-top:4px">從算式移出、改記刷卡</button>' :
+          (f.kind === 'exact' && f.pay === '現金' ? '<button class="chip" data-b="fix" data-k="tocard" data-i="' + i + '" data-j="' + j + '" style="height:32px;font-size:12px;margin-top:4px">改成刷卡</button>' : '');
+        return '出現在 <b>' + md(f.date) + '（' + esc(f.cat) + '）</b>' + (f.kind === 'term' ? '的算式 ' + esc(f.note || f.item) : '「' + esc(f.item) + '」') + '，記成' + esc(f.pay) + (f.inPeriod ? '' : '（帳單期間外）') + (btn ? '<br>' + btn : '');
+      }).join('<br>') : '所有科目和算式裡都找不到，<b>很可能漏記</b>';
+      const addBtn = (/一卡通/.test(x.line.desc) ? '<button class="chip" data-b="fix" data-k="topup" data-i="' + i + '" style="height:32px;font-size:12px;margin:6px 6px 0 0;border-color:#6B4FA0;color:#6B4FA0">記為一卡通儲值</button>' : '') +
+        '<button class="chip" data-b="fix" data-k="add" data-i="' + i + '" style="height:32px;font-size:12px;margin-top:6px">補記這筆（刷卡）</button>';
+      return '<div style="padding:8px 10px;margin-bottom:6px;border-radius:10px;background:var(--overSoft)"><div class="row" style="font-size:14px"><span>' + (x.line.date ? x.line.date + ' ' : '') + esc(x.line.desc || '（未註明）') + '</span><b style="color:var(--red)">$' + fmt(x.line.amount) + '</b></div><div style="font-size:12px;line-height:1.6;color:var(--redInk)">' + where + '<br>' + addBtn + '</div></div>';
+    }).join('');
+  }
+  const dups = r.appOnly.map(function (x, k) { return { x: x, k: k }; }).filter(function (o) { return o.x.dup; });
+  const inPer = r.appOnly.length - dups.length;
+  if (dups.length) h += '<div style="font-size:13px;font-weight:700;color:var(--amberInk);margin:8px 0 4px">可能重複補記（' + dups.length + ' 筆）</div><div class="sub" style="font-size:12px;line-height:1.5;margin-bottom:6px">這些和帳單上已對上的那筆同金額、同店名、同期數、日期相近，多半是重複新增的，確認後刪除即可。</div>' +
+    dups.map(function (o) { return '<div style="padding:8px 10px;margin-bottom:6px;border-radius:10px;background:var(--amberSoft)"><div class="row" style="font-size:14px"><span>' + md(o.x.date) + '・' + esc(o.x.cat) + '・' + esc(o.x.item) + '</span><b class="amt-k">$' + fmt(o.x.amount) + '</b></div><button class="chip" data-b="fix" data-k="del" data-i="' + o.k + '" style="height:32px;font-size:12px;margin-top:6px;color:var(--red)">刪除這筆重複</button></div>'; }).join('');
+  if (inPer) h += '<div style="font-size:13px;font-weight:700;color:var(--amberInk);margin:8px 0 4px">App 有、帳單沒有（' + inPer + ' 筆，已在下方清單用黃底標出）</div><div class="sub" style="font-size:12px;line-height:1.5">可能是：記錯支付方式（其實付現）、重複記帳、金額記錯，或要到下一期才入帳。</div>';
+  if (r.cancelled && r.cancelled.length) h += '<div class="sub" style="font-size:12px;margin-top:6px">刷退抵銷：' + r.cancelled.map(function (c) { return esc(c.charge.desc) + ' $' + fmt(c.charge.amount) + ' 與刷退 ' + money(c.refund.amount); }).join('、') + '（互相抵掉，不用處理）</div>';
+  if (r.refunds.length) h += '<div class="sub" style="font-size:12px;margin-top:6px">帳單上的退款／回饋：' + r.refunds.map(function (x) { return (x.desc || '') + ' ' + money(x.amount); }).join('、') + '</div>';
+  if (!r.billOnly.length && !r.appOnly.length) h += '<div class="ok" style="font-weight:700;margin-top:6px">每一筆都對上了 ✓</div>';
+  if (r.billInput != null && r.billInput === r.billTotal && !r.billOnly.length && !r.appOnly.length) h += '<div class="sub" style="font-size:12px">明細合計和本期應繳金額 $' + fmt(r.billInput) + ' 完全一致。</div>';
+  box.innerHTML = h + '<div id="fixPanel"></div>';
 }
 // ---------- 財務目標・報稅資料 ----------
 function renderGoalsTax(y, m) {
@@ -3298,6 +4055,251 @@ function renderGoalsTax(y, m) {
         return '<div style="padding:10px 0;border-top:1px solid var(--chip)"><div class="row"><span style="font-size:14px">' + r[0] + '</span><b>$' + fmt(r[1]) + '</b></div><div class="sub" style="font-size:11px;line-height:1.5">' + r[2] + '</div></div>';
       }).join('') + '<div class="sub" style="font-size:11px;margin-top:6px">金額來自 App 與試算表紀錄，僅供整理參考；實際扣除額以國稅局規定與正式憑證為準。</div></div>';
   }).catch(function () { tb.innerHTML = ''; });
+}
+
+// ---------- 電子發票比對 ----------
+function openInvoices() {
+  openModal('<b style="font-size:16px">電子發票比對</b>' +
+    '<div class="sub" style="font-size:12px;line-height:1.6">到「財政部電子發票整合服務平台」用手機條碼登入，查詢載具的消費明細，選好月份後匯出 CSV。把檔案選進來，或用手機打開 CSV 全選複製貼上都可以。App 會找出<b>有發票、但沒記帳</b>的消費（多半是現金漏記）。</div>' +
+    '<input type="file" id="invFile" accept=".csv,.txt,text/csv,text/plain" class="f" style="padding:8px">' +
+    '<textarea class="f" id="invText" rows="4" style="height:auto;padding:10px 12px;font-size:16px" placeholder="或把 CSV 內容貼在這裡"></textarea>' +
+    '<button class="submit" data-iv="go" style="margin:0">開始比對</button><div id="invRes"></div>' +
+    '<button class="chip" data-iv="close" style="align-self:center">關閉</button>');
+  const f = $('invFile');
+  if (f) f.onchange = function () {
+    const file = f.files && f.files[0]; if (!file) return;
+    file.arrayBuffer().then(function (buf) {
+      let t = new TextDecoder('utf-8').decode(buf);
+      if (t.indexOf('\uFFFD') >= 0) { try { t = new TextDecoder('big5').decode(buf); } catch (e) {} }
+      $('invText').value = t; toast('已讀入檔案，按「開始比對」', 1500);
+    });
+  };
+  $('modalBox').onclick = function (e) {
+    const b = e.target.closest('[data-iv]'); if (!b) return;
+    const k = b.dataset.iv;
+    if (k === 'close') return closeModal();
+    if (k === 'go') { S.invText = $('invText').value; if (!S.invText.trim()) return toast('請先選檔案或貼上內容'); b.disabled = true; b.textContent = '比對中…'; return runInvoices(false, b); }
+    const i = +b.dataset.i, x = S.inv && S.inv.missing[i]; if (!x) return;
+    if (k === 'cat') { x.cat = b.dataset.v; return renderInvoices(); }
+    if (k === 'add' || k === 'addcard') {
+      const itemEl = $('ivItem' + i), item = (itemEl && itemEl.value.trim()) || x.inv.store;
+      b.disabled = true;
+      return call('add', { date: x.inv.date, cat: x.cat, item: item, amount: x.inv.amount, pay: k === 'add' ? '現金' : '信用卡', note: '發票補記 ' + x.inv.no })
+        .then(function () { toast('已補記 ' + md(x.inv.date) + '「' + item + '」$' + fmt(x.inv.amount), 2000); clearCaches(); afterWrite(); runInvoices(true); }).catch(err);
+    }
+    if (k === 'ignore') {
+      b.disabled = true;
+      return call('ignoreInvoice', { no: x.inv.no, date: x.inv.date, store: x.inv.store, amount: x.inv.amount }).then(function (r) { toast(r.message); runInvoices(true); }).catch(err);
+    }
+  };
+}
+function runInvoices(nosave, btn) {
+  call('invoices', { text: S.invText, nosave: !!nosave }).then(function (r) { S.inv = r; if (btn) { btn.disabled = false; btn.textContent = '重新比對'; } renderInvoices(); })
+    .catch(function (e) { if (btn) { btn.disabled = false; btn.textContent = '開始比對'; } err(e); });
+}
+function renderInvoices() {
+  const r = S.inv, box = $('invRes'); if (!box || !r) return;
+  let h = '<div class="row" style="margin:10px 0 6px;font-size:13px"><span>' + md(r.from) + '～' + md(r.to) + '：' + r.count + ' 張，$' + fmt(r.total) + '</span><span>已記帳 <b class="ok">' + r.matched.length + '</b>｜沒記帳 <b class="over">' + r.missing.length + '</b></span></div>';
+  if (r.skipped) h += '<div class="sub" style="font-size:12px">另有 ' + r.skipped + ' 張已設為忽略。</div>';
+  if (!r.missing.length) h += '<div class="ok" style="font-weight:700;margin:6px 0">每張發票都有對應的紀錄 ✓</div>';
+  const cats = ['食物', '油料', '娛樂', '其他', '教育', '奉獻', '國旅'];
+  h += r.missing.map(function (x, i) {
+    return '<div style="padding:10px;margin-bottom:8px;border-radius:12px;background:var(--overSoft)"><div class="row" style="font-size:14px"><span>' + md(x.inv.date) + '　' + esc(x.inv.store) + '</span><b style="color:var(--red)">$' + fmt(x.inv.amount) + '</b></div>' +
+      (x.inv.items.length ? '<div class="sub" style="font-size:12px;margin:2px 0 6px">' + x.inv.items.slice(0, 6).map(function (it) { return esc(it.name) + ' ' + fmt(it.amount); }).join('、') + (x.inv.items.length > 6 ? '…' : '') + '</div>' : '') +
+      '<div class="items" style="margin:4px 0">' + cats.map(function (c) { return '<button class="chip' + (x.cat === c ? ' on' : '') + '" data-iv="cat" data-i="' + i + '" data-v="' + c + '" style="height:32px;font-size:12px;padding:0 10px">' + c + '</button>'; }).join('') + '</div>' +
+      '<input class="f" id="ivItem' + i + '" value="' + esc(x.item) + '" style="height:38px;margin:4px 0">' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="chip" data-iv="add" data-i="' + i + '" style="height:34px;font-size:12px;border-color:var(--blue);color:var(--blue)">補記（現金）</button><button class="chip" data-iv="addcard" data-i="' + i + '" style="height:34px;font-size:12px;border-color:var(--cardC);color:var(--cardInk)">補記（刷卡）</button><button class="chip" data-iv="ignore" data-i="' + i + '" style="height:34px;font-size:12px">忽略</button></div></div>';
+  }).join('');
+  if (r.matched.length) h += '<details><summary class="sub" style="font-size:12px;cursor:pointer">已有紀錄的 ' + r.matched.length + ' 張</summary><div style="font-size:12px;line-height:1.7;margin-top:4px">' +
+    r.matched.map(function (m) { return '✓ ' + md(m.inv.date) + ' ' + esc(m.inv.store) + ' $' + fmt(m.inv.amount) + ' ↔ ' + esc(m.rec.cat) + '・' + esc(m.rec.item) + '（' + esc(m.rec.pay) + (m.how === 'term' ? '，在算式 ' + esc(m.rec.note) + ' 裡' : '') + '）'; }).join('<br>') + '</div></details>';
+  box.innerHTML = h;
+}
+// ---------- 月底結帳精靈 ----------
+function openClose(y, m) {
+  if (!y) { const t = todayYM(); y = t.y; m = t.m; }
+  openModal('<div class="loading">檢查本月狀態…</div>');
+  call('close', { y: y, m: m }).then(renderClose).catch(function (e) { closeModal(); err(e); });
+}
+function renderClose(c) {
+  S.closeData = c;
+  const pct = c.total ? Math.round(c.ok / c.total * 100) : 0;
+  let h = '<div class="row"><button class="iconbtn" data-cl="prev" aria-label="上個月">' + ICON.left + '</button><b style="font-size:16px">' + c.y + '年' + c.m + '月 月底結帳</b><button class="iconbtn" data-cl="next" aria-label="下個月">' + ICON.right + '</button></div>' +
+    '<div class="bar" style="margin:4px 0"><i style="width:' + pct + '%;background:var(--green)"></i></div><div class="sub" style="font-size:12px;text-align:center">完成 ' + c.ok + ' ／ ' + c.total + ' 項' + (c.done ? '｜已於 ' + esc(c.done) + ' 完成結帳 ✓' : '') + '</div>';
+  h += c.items.map(function (x) {
+    let act = '';
+    if (x.key === 'cash') act = '<div class="row" style="margin-top:6px"><input class="f" id="clCash" inputmode="numeric" placeholder="實際現金（郵局＋錢包）" style="height:38px"><button class="chip" data-cl="cash" style="height:38px;flex-shrink:0">儲存</button></div>';
+    else if (!x.auto) act = '<button class="chip' + (x.manual ? ' on' : '') + '" data-cl="tick" data-k="' + x.key + '" style="height:32px;font-size:12px;margin-top:6px;--main:var(--green)">' + (x.manual ? '✓ 已完成' : '標記為已完成') + '</button>';
+    const go = { records: '到紀錄頁', prepaid: '去繳費', bill: '去對帳', invoice: '匯入發票', assets: '去盤點', today: '到今日頁' }[x.action];
+    if (go && !x.ok) act += '<button class="chip" data-cl="go" data-a="' + x.action + '" style="height:32px;font-size:12px;margin:6px 0 0 6px">' + go + ' ›</button>';
+    return '<div style="padding:10px 0;border-top:1px solid var(--chip)"><div class="row" style="align-items:flex-start"><span style="font-size:14px;font-weight:500"><span class="' + (x.ok ? 'ok' : 'fast') + '" style="font-weight:700">' + (x.ok ? '✓' : '○') + '</span> ' + esc(x.title) + '</span>' + (x.auto ? '<span class="sub" style="font-size:11px">自動檢查</span>' : '') + '</div><div class="sub" style="font-size:12px;line-height:1.5;padding-left:18px">' + esc(x.detail) + '</div><div style="padding-left:18px">' + act + '</div></div>';
+  }).join('');
+  h += c.done ? '<button class="chip" data-cl="unfinish" style="align-self:center">取消完成標記</button>' : '<button class="submit" data-cl="finish" style="margin:0;background:var(--green)">完成本月結帳</button>';
+  h += '<button class="chip" data-cl="close" style="align-self:center">關閉</button>';
+  $('modalBox').innerHTML = h;
+  $('modalBox').onclick = function (e) {
+    const b = e.target.closest('[data-cl]'); if (!b) return;
+    const k = b.dataset.cl;
+    if (k === 'close') return closeModal();
+    if (k === 'prev' || k === 'next') { const n = ymAdd({ y: c.y, m: c.m }, k === 'prev' ? -1 : 1); return openClose(n.y, n.m); }
+    const upd = function (args) { b.disabled = true; call('setClose', Object.assign({ y: c.y, m: c.m }, args)).then(function (r) { renderClose(r); afterWrite(); }).catch(err); };
+    if (k === 'tick') return upd({ key: b.dataset.k, val: !c.items.filter(function (x) { return x.key === b.dataset.k; })[0].manual });
+    if (k === 'cash') { const v = evalExpr($('clCash').value); if (isNaN(v)) return toast('請輸入金額'); return upd({ cash: Math.round(v) }); }
+    if (k === 'finish') { if (c.ok < c.total && !confirm('還有 ' + (c.total - c.ok) + ' 項沒完成，仍要標記為已結帳？')) return; return upd({ finish: true }); }
+    if (k === 'unfinish') return upd({ finish: false });
+    if (k === 'go') {
+      const a = b.dataset.a; closeModal();
+      if (a === 'invoice') return openInvoices();
+      if (a === 'bill') { const n = ymAdd({ y: c.y, m: c.m }, 1); return openBill(n); }
+      if (a === 'prepaid') { S.e.pay = '預扣'; S.e.amt = ''; S.e.ppKey = null; S.e.date = S.form.today; show('entry'); return renderEntry(); }
+      return show(a);
+    }
+  };
+}
+// ---------- 明年預算試算 ----------
+S.plan = { src: 'max', infl: 2, adj: [0, 0, 0, 0, 0, 0] };
+function openPlan() { show('plan'); const el = $('v-plan'); el.innerHTML = '<div class="loading">讀取今年各月資料…</div>'; const y = +S.form.today.slice(0, 4); call('planBase', { y: y }).then(function (b) { S.plan.base = b; renderPlan(); }).catch(err); }
+function planCalc() {
+  const P = S.plan, b = P.base, n = b.cats.length;
+  const thisYear = b.months.map(function (mo) { return mo.past ? mo.actual : mo.budget; });
+  const baseM = b.months.map(function (mo) {
+    return mo.budget.map(function (bud, c) { const act = mo.actual[c]; return P.src === 'budget' ? bud : (P.src === 'actual' ? (mo.past ? act : bud) : (mo.past ? Math.max(act, bud) : bud)); });
+  });
+  const plan = baseM.map(function (row) { return row.map(function (v, c) { return Math.max(0, Math.round(v * (1 + P.infl / 100) / 100) * 100 + (+P.adj[c] || 0)); }); });
+  const sumCol = function (mat, c) { return mat.reduce(function (s, row) { return s + row[c]; }, 0); };
+  const sumAll = function (mat) { return mat.reduce(function (s, row) { return s + row.reduce(function (a, x) { return a + x; }, 0); }, 0); };
+  return { thisYear: thisYear, plan: plan, budgetY: b.months.map(function (mo) { return mo.budget; }), sumCol: sumCol, sumAll: sumAll, n: n };
+}
+function renderPlan() {
+  const P = S.plan, b = P.base, el = $('v-plan'), C = planCalc();
+  const tyTot = C.sumAll(C.thisYear), plTot = C.sumAll(C.plan), delta = plTot - tyTot;
+  const saving = b.saving, newSaving = saving != null ? saving - delta / 12 : null;
+  const months = newSaving && newSaving > 0 ? Math.ceil(b.emergencyGap / newSaving) : null;
+  let h = '<button class="chip" data-pl="back" style="border:none;background:none;padding:0;color:var(--blue)">‹ 資產</button><h1 style="margin:6px 0 12px">' + (b.y + 1) + ' 年預算試算</h1>';
+  h += '<div class="grid2" style="align-items:start"><div><div class="card"><b style="font-size:15px">試算方式</b>' +
+    '<div class="sub" style="font-size:12px;margin:8px 0 4px">以今年的哪個數字當基礎</div><div class="items">' +
+    [['max', '實際與預算取高'], ['actual', '今年實際'], ['budget', '今年預算']].map(function (o) { return '<button class="chip' + (P.src === o[0] ? ' on' : '') + '" data-pl="src" data-v="' + o[0] + '" style="height:36px;font-size:13px">' + o[1] + '</button>'; }).join('') + '</div>' +
+    '<div class="row" style="margin-top:10px"><span style="font-size:14px">物價調整</span><div style="display:flex;align-items:center;gap:6px"><button class="chip" data-pl="infl" data-v="-1" style="height:34px">−</button><b>' + P.infl + '%</b><button class="chip" data-pl="infl" data-v="1" style="height:34px">＋</button></div></div>' +
+    '<div class="sub" style="font-size:12px;margin:10px 0 4px">各科目每月再加減（例如食物每月 +1,000）</div>' +
+    b.cats.map(function (c, i) { return '<div class="row" style="padding:4px 0"><span style="font-size:14px">' + c + '</span><input class="f" data-adj="' + i + '" inputmode="numeric" value="' + (P.adj[i] || '') + '" placeholder="0" style="width:110px;height:38px;text-align:right"></div>'; }).join('') +
+    '<div class="sub" style="font-size:11px;margin-top:6px">今年還沒過完的月份（' + (12 - b.done) + ' 個月）用預算當實際。季節月份（春節、暑假）會保留各月原本的高低。</div></div></div>';
+  h += '<div><div class="card"><b style="font-size:15px">試算結果</b>' +
+    '<div class="row" style="margin-top:8px"><span>' + b.y + ' 年生活費</span><b>$' + fmt(tyTot) + '</b></div>' +
+    '<div class="row"><span>' + (b.y + 1) + ' 年試算</span><b class="' + (delta > 0 ? 'fast' : 'ok') + '">$' + fmt(plTot) + '</b></div>' +
+    '<div class="row"><span>差異</span><b class="' + (delta > 0 ? 'over' : 'ok') + '">' + (delta >= 0 ? '+' : '−') + '$' + fmt(Math.abs(delta)) + '（每月平均 ' + (delta >= 0 ? '+' : '−') + '$' + fmt(Math.abs(delta / 12)) + '）</b></div>' +
+    (saving != null ? '<div style="margin-top:10px;padding:10px;border-radius:12px;background:var(--bg);font-size:13px;line-height:1.6">今年平均每月結餘約 <b>$' + fmt(saving) + '</b>（滿月記帳的收入 − 支出）。照這份預算、收入不變，明年每月結餘約 <b>$' + fmt(newSaving) + '</b>。' +
+      (b.emergencyGap ? (months ? '緊急備用金還差 $' + fmt(b.emergencyGap) + '，全部用結餘補，約 <b>' + months + ' 個月</b>補滿。' : '結餘不足，緊急備用金無法用每月結餘補滿。') : '緊急備用金已補滿。') + '</div>' : '') +
+    '</div>';
+  // chart: monthly totals
+  const tyM = C.thisYear.map(function (r) { return r.reduce(function (a, x) { return a + x; }, 0); }), plM = C.plan.map(function (r) { return r.reduce(function (a, x) { return a + x; }, 0); });
+  const ymax = niceMax(Math.max.apply(null, tyM.concat(plM)) * 1.1), X0 = 40, X1 = 352, Y0 = 210, Y1 = 14, bw = (X1 - X0) / 12;
+  let svg = svgOpen('今年與明年每月生活費') + yAxis(ymax, X0, X1, Y0, Y1);
+  tyM.forEach(function (v, i) { const hh = v / ymax * (Y0 - Y1); svg += '<rect x="' + (X0 + i * bw + 4).toFixed(1) + '" y="' + (Y0 - hh).toFixed(1) + '" width="' + (bw - 8).toFixed(1) + '" height="' + hh.toFixed(1) + '" rx="3" fill="#B8C0CC"/><text x="' + (X0 + i * bw + bw / 2).toFixed(1) + '" y="228" font-size="10" text-anchor="middle" fill="#5B6675">' + (i + 1) + '月</text>'; });
+  svg += '<polyline points="' + plM.map(function (v, i) { return (X0 + i * bw + bw / 2).toFixed(1) + ',' + (Y0 - v / ymax * (Y0 - Y1)).toFixed(1); }).join(' ') + '" fill="none" stroke="#2458C6" stroke-width="3"/>';
+  plM.forEach(function (v, i) { svg += '<circle cx="' + (X0 + i * bw + bw / 2).toFixed(1) + '" cy="' + (Y0 - v / ymax * (Y0 - Y1)).toFixed(1) + '" r="3.5" fill="#2458C6"/>'; });
+  h += '<div class="card"><b style="font-size:15px">每月生活費</b><div class="legend" style="margin:6px 0"><span><b style="background:#B8C0CC;height:8px"></b>' + b.y + ' 年（已過月份為實際）</span><span><b style="background:#2458C6"></b>' + (b.y + 1) + ' 年試算</span></div><div style="height:240px">' + svg + '</svg></div></div>';
+  // table by category
+  h += '<div class="card"><b style="font-size:15px">各科目全年</b><div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px"><tr class="sub" style="text-align:right"><th style="text-align:left;font-weight:500">科目</th><th style="font-weight:500">今年預算</th><th style="font-weight:500">今年實際＊</th><th style="font-weight:500">明年試算</th></tr>' +
+    b.cats.map(function (c, i) { return '<tr style="text-align:right;border-top:1px solid var(--chip)"><td style="text-align:left;padding:6px 0">' + c + '</td><td>' + fmt(C.sumCol(C.budgetY, i)) + '</td><td>' + fmt(C.sumCol(C.thisYear, i)) + '</td><td><b>' + fmt(C.sumCol(C.plan, i)) + '</b></td></tr>'; }).join('') +
+    '</table></div><div class="sub" style="font-size:11px;margin-top:4px">＊還沒過完的月份以預算計</div>' +
+    '<button class="chip" data-pl="copy" style="height:38px;margin-top:10px;width:100%">複製明年 12 個月 × 科目的表格</button><div class="sub" style="font-size:11px;margin-top:4px">可直接貼到明年家計簿各月的預算列，或給我幫你建 ' + (b.y + 1) + ' 年的檔案。</div></div></div></div>';
+  el.innerHTML = h;
+  el.querySelectorAll('input[data-adj]').forEach(function (inp) { inp.onchange = function () { const v = evalExpr(inp.value || '0'); P.adj[+inp.dataset.adj] = isNaN(v) ? 0 : Math.round(v); renderPlan(); }; });
+}
+$('v-plan').addEventListener('click', function (e) {
+  const b = e.target.closest('[data-pl]'); if (!b) return;
+  const k = b.dataset.pl, P = S.plan;
+  if (k === 'back') return show('assets');
+  if (k === 'src') { P.src = b.dataset.v; return renderPlan(); }
+  if (k === 'infl') { P.infl = Math.max(-10, Math.min(20, P.infl + (+b.dataset.v))); return renderPlan(); }
+  if (k === 'copy') {
+    const C = planCalc(), b0 = P.base;
+    const tsv = ['月份\t' + b0.cats.join('\t') + '\t合計'].concat(C.plan.map(function (r, i) { return (i + 1) + '月\t' + r.join('\t') + '\t' + r.reduce(function (a, x) { return a + x; }, 0); })).join('\n');
+    (navigator.clipboard ? navigator.clipboard.writeText(tsv) : Promise.reject()).then(function () { toast('已複製，可以貼到試算表'); }).catch(function () { openModal('<b>長按全選複製</b><textarea class="f" rows="12" style="height:auto;font-size:13px">' + esc(tsv) + '</textarea><button class="chip" onclick="closeModal()">關閉</button>'); });
+  }
+});
+
+// ---------- 預扣信封 ----------
+function openEnv(ym) {
+  S.envYM = ym || S.envYM || todayYM();
+  show('env');
+  const el = $('v-env'); if (!S.env) el.innerHTML = '<div class="loading">計算各項目水位…</div>'; else el.classList.add('dim');
+  call('envelopes', S.envYM).then(function (d) { el.classList.remove('dim'); S.env = d; renderEnv(); }).catch(function (e) { el.classList.remove('dim'); err(e); });
+}
+function renderEnv() {
+  const d = S.env, el = $('v-env'), t = todayYM(), isNow = d.y === t.y && d.m === t.m;
+  let h = '<button class="chip" data-ev="back" style="border:none;background:none;padding:0;color:var(--blue)">‹ 資產</button>' + monthHeader(d, 'ev', '預扣信封｜各項目水位');
+  if (d.borrows.length) {
+    h += '<div class="card" style="border:2px solid var(--amber)"><b style="font-size:15px">待歸還的調用</b>' + d.borrows.map(function (b) {
+      return '<div class="row" style="padding:8px 0;border-top:1px solid var(--chip)"><div class="col" style="flex:1"><span style="font-size:14px">' + esc(b.name) + ' <b>$' + fmt(b.amount) + '</b></span><span class="sub" style="font-size:12px">' + b.y + '/' + b.m + ' 從' + esc(b.acct) + '借到日常（' + esc(b.cat) + '）</span></div>' +
+        '<button class="chip" data-ev="repay" data-id="' + esc(b.id) + '" style="height:34px;font-size:12px">已歸還</button></div>';
+    }).join('') + '<div class="sub" style="font-size:11px;margin-top:6px">按「已歸還」會在試算表記一筆「日常戶 → 預扣帳戶」，並從當月可花的錢扣掉。</div></div>';
+  }
+  d.accounts.forEach(function (a) {
+    const ln = function (label, now, ye, opt) {
+      opt = opt || {};
+      return '<div class="row" style="padding:5px 0;border-top:1px solid var(--chip);font-size:13px' + (opt.bold ? ';font-weight:700' : '') + '"><span style="flex:1;min-width:0">' + label + '</span>' +
+        '<span style="width:84px;text-align:right" class="' + (now < 0 ? 'over' : '') + '">' + money(now) + '</span><span class="sub" style="width:84px;text-align:right">' + money(ye) + '</span></div>';
+    };
+    let tb = '<div class="row" style="font-size:11px;padding-bottom:2px"><span class="sub" style="flex:1">項目</span><span class="sub" style="width:84px;text-align:right">' + d.m + ' 月底</span><span class="sub" style="width:84px;text-align:right">年底預估</span></div>';
+    tb += ln(a.items.length + ' 個信封合計', a.envSum, a.envYearEnd);
+    tb += ln('帳戶未分配緩衝底金' + (a.opening ? '（含' + esc(a.openingLabel) + '）' : ''), a.buffer, a.bufferYearEnd);
+    a.lines.forEach(function (L) { tb += ln(esc(L.label), L.now, L.yearEnd); });
+    if (a.tail || a.tailYearEnd) tb += ln('<span class="sub">小數尾差</span>', a.tail, a.tailYearEnd);
+    tb += ln('＝ ' + esc(a.acct) + '帳戶總結餘', a.actual, a.actualYearEnd, { bold: true });
+    let note = '';
+    if (a.overdraft.length) note += '<div style="margin-top:8px;padding:8px 10px;border-radius:10px;font-size:12px;line-height:1.6;background:var(--overSoft);color:var(--redInk)"><b>需底金沖銷 ' + a.overdraft.length + ' 個：' + a.overdraft.map(esc).join('、') + '</b>（目前 ' + money(a.overdraftSum) + '，年底 ' + money(a.overdraftSumYE) + '）<br>' +
+      '由緩衝底金抵銷後，緩衝剩 <b>' + money(a.bufferAfterOffset) + '</b>；年底預估剩 <b>' + money(a.bufferAfterOffsetYE) + '</b>' + (a.bufferAfterOffsetYE < 0 ? '，年底前需要補一點進來' : '') + '。</div>';
+    if (a.ahead.length) note += '<div class="sub" style="font-size:12px;line-height:1.6;margin-top:6px">暫時超前支付、年底會回正：' + a.ahead.map(esc).join('、') + '。</div>';
+    if (a.carryActual != null && a.carryTotal) note += '<div class="sub" style="font-size:12px;line-height:1.6;margin-top:6px">2026 年底各信封結轉 $' + fmt(a.carryTotal) + '，實際轉入 $' + fmt(a.carryActual) + '。</div>';
+    h += '<div class="card"><div class="row"><b style="font-size:16px">' + esc(a.acct) + '</b><span class="sub" style="font-size:12px">本月應繳視為已繳</span></div><div style="margin-top:8px">' + tb + '</div>' + note + '</div>';
+    h += '<div class="grid2" style="align-items:start">' + a.items.map(function (it) {
+      const low = it.balance < 0;
+      const cls = low ? 'over' : (it.borrowed ? 'fast' : 'ok');
+      return '<div class="card" style="margin-bottom:0"><div class="row"><b style="font-size:15px">' + esc(it.name) + '</b><span class="' + cls + '" style="font-size:20px;font-weight:700">' + money(it.balance) + '</span></div>' +
+        '<div class="sub" style="font-size:12px;line-height:1.6;margin-top:4px">' + (it.carry ? '去年結轉 $' + fmt(it.carry) + '｜' : '') + '已預存 $' + fmt(it.allocYTD) + '（全年 $' + fmt(it.allocYear) + '）｜已支出 $' + fmt(it.paidYTD) +
+        (it.attrNote.length ? '<br>（含 ' + it.attrNote.map(esc).join('、') + '）' : '') +
+        (it.pending ? '<br>本月待繳 <b>$' + fmt(it.pending) + '</b>' : '') + (it.borrowed ? '<br><span class="fast">已借出 $' + fmt(it.borrowed) + '</span>' : '') +
+        '<br>年底預估 <b class="' + (it.yearEnd < 0 ? 'over' : '') + '">' + money(it.yearEnd) + '</b>' +
+        '<br>下次繳費：' + (it.next ? it.next.m + ' 月 $' + fmt(it.next.amount) : '今年沒有了') + (low ? '<br><span class="over">' + (it.yearEnd < 0 ? '透支，由緩衝底金沖銷' : '暫時超前支付，年底會回正') + '</span>' : '') + '</div>' +
+        '<div class="row" style="margin-top:8px"><span style="font-size:13px">可調用 <b class="' + (it.safe ? 'ok' : 'done') + '">$' + fmt(it.safe) + '</b></span>' +
+        (isNow && it.safe > 0 ? '<button class="chip" data-ev="borrow" data-k="' + esc(it.key) + '" style="height:34px;font-size:12px;border-color:var(--green);color:var(--green)">調用到日常</button>' : '') + '</div></div>';
+    }).join('') + '</div>';
+  });
+  h += '<div class="sub" style="font-size:11px;line-height:1.6;margin:12px 0">信封餘額＝1 月到本月的預存 − 實支（本月應繳視為已繳）；年底預估再加上 12 月為止的預存與實支。2026 年 5 月「投資轉出」算在綜所稅、10 月「信用卡帳單代繳」算在小布丁夏令營。「可調用」＝借出後直到年底都不會透支的金額。</div>';
+  el.innerHTML = h;
+}
+$('v-env').addEventListener('click', function (e) {
+  const b = e.target.closest('[data-ev],[data-act]'); if (!b) return;
+  const k = b.dataset.ev || b.dataset.act;
+  if (k === 'back') return show('assets');
+  if (k === 'ev-prev' || k === 'ev-next') return openEnv(ymAdd(S.envYM, k === 'ev-prev' ? -1 : 1));
+  if (k === 'repay') { if (!confirm('確定已從日常戶轉回？')) return; b.disabled = true; return call('repay', { id: b.dataset.id }).then(function (r) { toast(r.message, 3000); clearCaches(); afterWrite(); openEnv(); }).catch(err); }
+  if (k === 'borrow') return openBorrow(b.dataset.k);
+});
+function openBorrow(key) {
+  const it = S.env.accounts.reduce(function (s2, a) { return s2.concat(a.items); }, []).filter(function (x) { return x.key === key; })[0];
+  S.bw = { cat: '食物', force: false };
+  const draw = function (msg) {
+    $('modalBox').innerHTML = '<b style="font-size:16px">從「' + esc(it.name) + '」調用到日常</b>' +
+      '<div class="sub" style="font-size:13px;line-height:1.6">信封餘額 $' + fmt(it.balance) + '，可安全調用 <b class="ok">$' + fmt(it.safe) + '</b>' + (it.next ? '（下次 ' + it.next.m + ' 月要繳 $' + fmt(it.next.amount) + '）' : '') + '。</div>' +
+      '<label class="sub">金額<input class="f" id="bwAmt" inputmode="numeric" placeholder="最多 ' + fmt(it.safe) + '"></label>' +
+      '<div class="sub">加到本月哪個科目</div><div class="cats">' + ['食物', '油料', '娛樂', '其他', '教育', '奉獻'].map(function (c) { return '<button class="chip' + (S.bw.cat === c ? ' on' : '') + '" data-bw="cat" data-v="' + c + '">' + c + '</button>'; }).join('') + '</div>' +
+      '<label class="sub">原因（選填）<input class="f" id="bwNote" placeholder="例如：月底聚餐"></label>' +
+      (msg ? '<div class="over" style="font-size:13px;line-height:1.5">' + esc(msg) + '</div>' : '') +
+      '<div class="sub" style="font-size:12px;line-height:1.5">會在試算表記一筆「' + esc(it.acct) + ' → 郵局日常戶」，本月可花的錢和該科目預算同時增加；下個月發薪日起提醒歸還。</div>' +
+      '<div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)"><button class="submit" style="background:var(--card);color:var(--ink);border:1px solid var(--line2);margin:0" data-bw="cancel">取消</button><button class="submit" style="margin:0;background:var(--green)" data-bw="ok">' + (S.bw.force ? '仍要調用' : '確定調用') + '</button></div>';
+  };
+  openModal(''); draw();
+  $('modalBox').onclick = function (e) {
+    const b = e.target.closest('[data-bw]'); if (!b) return;
+    if (b.dataset.bw === 'cancel') return closeModal();
+    if (b.dataset.bw === 'cat') { const a = $('bwAmt').value, n = $('bwNote').value; S.bw.cat = b.dataset.v; draw(); $('bwAmt').value = a; $('bwNote').value = n; return; }
+    const v = Math.round(evalExpr($('bwAmt').value)); if (isNaN(v) || v <= 0) return toast('請輸入金額');
+    const note = $('bwNote').value;
+    if (v > it.safe && !S.bw.force) { S.bw.force = true; draw('超過可安全調用的 $' + fmt(it.safe) + '。借出後，' + (it.next ? it.next.m + ' 月繳費時這個項目會不夠，要由其他項目墊付。' : '年底前會不夠。') + '確定要借，請再按一次「仍要調用」。'); $('bwAmt').value = v; $('bwNote').value = note; return; }
+    b.disabled = true;
+    call('borrow', { key: key, amount: v, cat: S.bw.cat, note: note, force: S.bw.force }).then(function (r) { closeModal(); toast(r.message, 3600); clearCaches(); afterWrite(); openEnv(); }).catch(function (er) { b.disabled = false; err(er); });
+  };
 }
 
 // ---------- 視窗 ----------
