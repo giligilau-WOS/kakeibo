@@ -1,0 +1,72 @@
+// 假的 2026 年家計簿試算表（金額全部虛構）。
+// 只布置 App 會讀到的儲存格；月表上方摘要用簡化的「重算」模擬試算表公式：
+//   各科目 現金＝支付方式為「現金」、刷卡＝其他（信用卡、一卡通）；
+//   「一卡通儲值」不屬於任何科目，所以不進科目合計（依記帳規則：儲值只算轉帳）。
+// 這是假設，不是試算表真正的公式；真實公式的行為只能請使用者在手機上確認。
+import { rng } from '../helpers/gas.mjs';
+
+export const CATS = ['奉獻', '食物', '教育', '油料', '娛樂', '其他'];
+export const TRAVEL_FULL = '國旅專款(不扣日常預算)';
+const FIRST = 16, LAST = 515;
+
+function recalcMonth(sh) {
+  const sum = (pred) => { let s = 0; for (let r = FIRST; r <= LAST; r++) { const amt = sh.val(r, 14); if (amt === '' || amt === null) continue; if (pred(sh.val(r, 12), sh.val(r, 16))) s += Number(amt) || 0; } return s; };
+  let cash = 0, card = 0;
+  CATS.forEach((c, i) => {
+    const a = sum((cat, pay) => cat === c && pay === '現金'), b = sum((cat, pay) => cat === c && pay !== '現金');
+    sh.set(9, 2 + i, a).set(10, 2 + i, b).set(11, 2 + i, a + b); cash += a; card += b;
+  });
+  const budget = CATS.reduce((s, c, i) => s + (Number(sh.val(8, 2 + i)) || 0), 0);
+  sh.set(8, 8, budget).set(9, 8, cash).set(10, 8, card).set(11, 8, cash + card).set(12, 8, budget - cash - card);
+  const tc = sum((cat, pay) => cat === TRAVEL_FULL && pay === '現金'), tk = sum((cat, pay) => cat === TRAVEL_FULL && pay !== '現金');
+  sh.set(13, 14, tc).set(13, 15, tk).set(13, 13, tc + tk);
+  const cardBill = sum((cat, pay) => pay !== '現金' && pay !== '一卡通');
+  sh.set(2, 12, cardBill).set(3, 16, Math.max(0, cardBill - (Number(sh.val(4, 14)) || 0))).set(3, 18, 0);
+}
+
+/** 布置 2026 年假試算表。回傳方便測試用的資訊。 */
+export function buildWorkbook2026(g, opt = {}) {
+  const R = rng(opt.seed || 20261118);
+  const book = g.book(2026);
+  // 月表
+  const months = opt.months || [9, 10, 11, 12];
+  for (const m of months) {
+    const sh = book.sheet('2026年' + m + '月');
+    const budgets = opt.budgets || [3000, 12000, 2000, 3000, 2500, 3500];
+    budgets.forEach((b, i) => sh.set(8, 2 + i, b));
+    sh.set(4, 2, 30000).set(2, 5, 8000).set(4, 14, 0);
+    if (opt.ledger !== false && m <= 11) {
+      const n = m === 11 ? 6 : 12, lastDay = m === 11 ? 17 : 28;
+      for (let i = 0; i < n; i++) {
+        const r = FIRST + i, d = R.int(1, lastDay);
+        sh.set(r, 11, '2026-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0'))
+          .set(r, 12, R.pick(['食物', '食物', '油料', '娛樂', '其他'])).set(r, 13, R.pick(['午餐', '全聯', '加油', '早餐', '停車']))
+          .set(r, 14, R.int(30, 900)).set(r, 16, R.pick(['現金', '現金', '聯邦信用卡'])).set(r, 17, '');
+      }
+    }
+    book.readHooks.push((s, rg) => { if (s === sh && rg.r <= 14) recalcMonth(sh); });
+  }
+  // 選單
+  const menu = book.sheet('選單');
+  [['午餐', '食物'], ['全聯', '食物'], ['早餐', '食物'], ['加油', '油料'], ['電影', '娛樂'], ['停車', '其他'], ['主日奉獻', '奉獻'], ['書', '教育']]
+    .forEach((x, i) => menu.set(2 + i, 1, x[0]).set(2 + i, 2, x[1]));
+  ['現金', '聯邦信用卡'].forEach((p, i) => menu.set(2 + i, 3, p));
+  // 台銀預扣表：計畫（付款）在 B:M，預存分配在 Q:AB（列號 −6）
+  const tw = book.sheet('台銀帳戶(預扣及攤平)');
+  const PREPAID = g.get('PREPAID')[2026][0];
+  PREPAID.items.forEach(([row, , months, ]) => {
+    const amt = R.int(5, 60) * 100;
+    for (let m = 1; m <= 12; m++) {
+      if (months.indexOf(m) >= 0) tw.set(row, 1 + m, amt);
+      tw.set(row - 6, 16 + m, Math.ceil(amt * months.length / 12 / 100) * 100 + 200);   // 每月多存一點，信封才有可調用的餘額
+    }
+    tw.set(row, 1, PREPAID.items.find(x => x[0] === row)[1]);
+  });
+  for (let m = 1; m <= 12; m++) { tw.set(4, 16 + m, 60000); tw.set(7, 1 + m, 80000 + m * 1000); tw.set(37, 1 + m, 0); }
+  // 其他會被讀到的表
+  book.sheet('收入'); book.sheet('總表'); book.sheet('滿月記帳'); book.sheet('永豐銀行準備金定期定額'); book.sheet('郵局優存帳戶');
+  // 一卡通、試算表升級旗標（ensureSchema2_ 只跑一次；測試裡視為已升級）
+  g.props.set('SCHEMA2_2026', '2026-11-01 00:00');
+  if (opt.ecard !== false) g.props.set('ECARD', JSON.stringify({ bal: 320, date: '2026-11-01', seen: [] }));
+  return { book, tw, month: m => book.getSheetByName('2026年' + m + '月') };
+}

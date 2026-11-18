@@ -17,7 +17,7 @@ node tools/check.mjs
 
 ## 步驟 2：金額與狀態邏輯測試（變更有碰到時才做）
 
-如果變更碰到以下任何一種，就要寫測試並執行（`node --test tests/`，用 Node 內建的 `node:test`，不需另外安裝套件）：
+如果變更碰到以下任何一種，就要寫測試並執行（`node --test 'tests/**/*.test.mjs'`，用 Node 內建的 `node:test`，不需另外安裝套件；Node 22 的 `node --test tests/` 會把資料夾當檔案而失敗）：
 預扣水位、調撥、繳費、一卡通、對帳、`App紀錄` 的寫入、刪除或還原、日期與月份換算。
 
 - **屬性測試**：自己寫亂數產生器，每個屬性至少跑 500 組，要包含邊界值：0 元、負數、跨年（12 月 → 1 月）、閏年 2 月、月底、大金額。
@@ -28,15 +28,16 @@ node tools/check.mjs
   - 往返還原：先寫入一筆 `App紀錄` 再刪除，攤平表要回到原本的值或公式（`prevM` 機制）。
   - 冪等：同一個請求送兩次（例如離線佇列 `flushQueue` 重送），不能記成兩筆。
 - **差分測試**：如果是重構，或是把邏輯從 `.gs` 搬到別處，要保留舊函式當標準答案，用同一批亂數輸入比對新舊輸出，兩者必須完全一致。
-- 測試 `.gs` 裡的函式時，用 `node:vm` 載入 `.gs`，並對 `SpreadsheetApp`、`PropertiesService`、`CacheService`、`Utilities` 做最小的假實作（stub）。**測試絕對不能連到真正的試算表。**
+- 亂數用 `tests/helpers/gas.mjs` 的 `rng()`。新增屬性測試後，要故意把被測邏輯改壞一次（`KAKEIBO_GS=改壞的副本 node --test …`），確認測試會失敗；曾發生亂數偏差讓測試形同沒測。
+- 測試 `.gs` 裡的函式時，用 `tests/helpers/gas.mjs` 的 `loadGas()`（`node:vm` 載入 `.gs`，並對 `SpreadsheetApp`、`PropertiesService`、`CacheService`、`Utilities` 做最小的假實作（stub））。**測試絕對不能連到真正的試算表。**
 
 ## 步驟 3：實際運行（改到 index.html 時一定要做）
 
-- 用 Python Playwright 搭配本機的 Chrome，從本機（`python3 -m http.server`）打開 `index.html`。
-- 在 localStorage 放一組假的 `kakeiboCfg`，再用 `page.route` 攔截對 Apps Script 的請求，回傳 `tests/fixtures/` 裡的假資料。**不能打到正式的部署網址。**
+- 執行 `node tests/e2e.mjs`：用環境裡的 Node Playwright，從本機（`python3 -m http.server`）打開 `index.html`。
+- 它會在 localStorage 放一組假的 `kakeiboCfg`，用 `page.route` 攔截對 Apps Script 的請求，交給「`tests/fixtures/workbook.mjs` 的假試算表＋真正的 `.gs` 的 `doPost`」回應。**不能打到正式的部署網址。** 新流程請加在 `tests/e2e.mjs`。
 - 走完受影響的流程（例如：記一筆 → 今日看板數字更新 → 紀錄頁看得到 → 刪除），檢查三件事：畫面上的數字、送出的請求內容、console 沒有錯誤。
 - 用 iPhone 尺寸（390×844）截圖，交給使用者看。
-- 如果 fixture 框架還沒建，先跟使用者討論再建，不要自己臨時湊一份。
+- 假試算表的月表摘要是簡化模型（見 `tests/fixtures/workbook.mjs` 開頭說明），不是真正的試算表公式。
 
 ## 步驟 4：失敗處理與三輪上限
 
