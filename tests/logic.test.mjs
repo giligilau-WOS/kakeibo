@@ -387,6 +387,22 @@ test('冪等：校正一卡通餘額送兩次，結果相同', () => {
   assert.equal(a, 777); assert.equal(b, 777);
 });
 
+// ---------------------------------------------------------------- 卡費表
+test('卡費表：在訂閱區插入新列後，仍讀到「★ 本月6日聯邦卡應繳帳單總額」那一列', () => {
+  for (let i = 0; i < RUNS; i++) {
+    const R = rng(5100 + i), g = loadGas({ props: { TOKEN: 't' } }), sh = g.book(2027).sheet('卡費');
+    // 依真實 2027 版面：第 4 列小計、第 5～12 列訂閱、第 15 列帳單總額；再隨機插入 0～4 列訂閱
+    const extra = R.int(0, 4), totalRow = 15 + extra, want = Array.from({ length: 12 }, () => R.int(0, 20000));
+    sh.set(4, 1, '① 聯邦固定數位訂閱小計(月初預扣)');
+    for (let r = 5; r <= 12 + extra; r++) sh.set(r, 1, '   ├─ 訂閱' + r);
+    sh.set(totalRow - 2, 1, '【自動連動：各月非固定刷卡與22日結帳分流】').set(totalRow - 1, 1, '② 本月6日實際出帳應繳之非固定刷卡').set(totalRow, 1, R.pick(['', ' ']) + '★ 本月6日聯邦卡應繳帳單總額 (①+②)');
+    for (let r = 4; r <= totalRow + 2; r++) for (let c = 2; c <= 13; c++) if (r !== totalRow) sh.set(r, c, R.int(1, 99));
+    want.forEach((v, k) => sh.set(totalRow, 2 + k, v));
+    const spec = g.get('PROFILE')[2027].cardDue, m = R.int(1, 12);
+    assert.equal(g.call('rowValue_', 2027, spec, m), want[m - 1], '插入 ' + extra + ' 列後 ' + m + ' 月');
+  }
+});
+
 // ---------------------------------------------------------------- 版本
 test('版本：init／refresh／version 都回報後端版本，且不低於前端需要的版本', () => {
   const { g } = fresh(12), v = g.get('BACKEND_VERSION');

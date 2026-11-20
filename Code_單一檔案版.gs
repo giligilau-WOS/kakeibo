@@ -28,7 +28,7 @@ const CONFIG = {
 
 // 後端版本：每次修改這個檔案都要更新（tools/check.mjs 會檢查）。
 // 前端 index.html 的 NEED_BACKEND 若比這個新，App 會提醒「後端還沒部署新版本」。
-const BACKEND_VERSION = '2026.11.18-1800';
+const BACKEND_VERSION = '2026.11.20-1000';
 
 // 各年度檔案的差異（儲存格位置）
 const PROFILE = {
@@ -55,7 +55,8 @@ const PROFILE = {
     emergency: { sheet: '總表', row: 18, firstCol: 3 },
     pool: { sheet: '永豐銀行準備金定期定額', row: 64, firstCol: 2 },
     check: { sheet: '總表', row: 50, firstCol: 3 },
-    cardDue: { type: 'sheet', sheet: '卡費', row: 15, firstCol: 2 },
+    // label：用 A 欄標題找列（在上方插入訂閱列也不會讀錯）；找不到才用 row
+    cardDue: { type: 'sheet', sheet: '卡費', label: '★ 本月6日聯邦卡應繳帳單總額', row: 15, firstCol: 2 },
     monthly: {
       type: 'new', firstCol: 6, totalRow: 14, changeRow: 15, incomeRow: 21, expenseRow: 33, netRow: 39,
       accounts: [
@@ -420,11 +421,19 @@ function pace_(cat, total, budget, time) {
   return 'ok';
 }
 
+// 依 A 欄標題找列號（標題開頭相符即可）；沒有 label 或找不到時用 spec.row
+function specRow_(sh, spec) {
+  if (!spec.label) return spec.row;
+  const a = sh.getRange(1, 1, 80, 1).getValues();
+  for (let i = 0; i < a.length; i++) if (String(a[i][0] || '').trim().indexOf(spec.label) === 0) return i + 1;
+  return spec.row;
+}
 function rowValue_(y, spec, m) {
   if (!spec) return null;
   const s = ss_(y); if (!s) return null;
-  const row = cached_('R' + y + ':' + spec.sheet + ':' + spec.row, 120, function () {
-    return s.getSheetByName(spec.sheet).getRange(spec.row, spec.firstCol, 1, 12).getValues()[0].map(function (v) { return v instanceof Date ? '' : v; });
+  const row = cached_('R' + y + ':' + spec.sheet + ':' + (spec.label || spec.row), 120, function () {
+    const sh = s.getSheetByName(spec.sheet);
+    return sh.getRange(specRow_(sh, spec), spec.firstCol, 1, 12).getValues()[0].map(function (v) { return v instanceof Date ? '' : v; });
   });
   return row[m - 1];
 }
