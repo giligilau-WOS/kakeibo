@@ -364,6 +364,53 @@ test('信封調用：借出時水位減少借出額；歸還後帳上淨額為 0
   }
 });
 
+// 事故：試算表在可支配現金不足時會自動刪減科目預算，借進來的錢先被公式補回那些科目，
+// 使用者選的「其他」只多了一部分（借 6000 只多 2822）。調用的金額必須全部加到選的科目。
+test('信封調用：不論試算表有沒有自動刪減預算，選的科目剛好多出借入金額，其他科目不變', () => {
+  const stats = { cut: 0, plain: 0 };
+  for (let i = 0; i < RUNS; i++) {
+    const R = rng(7300 + i);
+    const budgets = [R.int(0, 80) * 100, R.int(60, 150) * 100, R.int(0, 30) * 100, R.int(10, 40) * 100, R.int(5, 30) * 100, R.int(20, 60) * 100];
+    const plan = budgets.reduce((a, b) => a + b, 0);
+    const cut = { base: plan + R.int(-15000, 3000), floors: { 食物: R.int(0, 90) * 100, 娛樂: R.int(0, 10) * 100, 其他: R.int(0, 40) * 100 } };
+    const { g } = fresh(7300 + i, { budgets, cut });
+    const items = g.call('getEnvelopes_', 2026, 11).accounts[0].items.filter(x => x.safe > 0);
+    if (!items.length) continue;
+    const n = R.int(1, 2);   // 同月連續調用兩次也要各自加滿
+    for (let k = 0; k < n; k++) {
+      g.nextRequest();
+      const its = g.call('getEnvelopes_', 2026, 11).accounts[0].items.filter(x => x.safe > 0);
+      if (!its.length) break;
+      const it = R.pick(its), amt = R.pick([1, it.safe, R.int(1, it.safe)]), cat = R.pick(CATS);
+      const t0 = g.call('readTopRaw_', 2026, 11);
+      g.call('borrowEnvelope_', { key: it.key, amount: amt, cat });
+      g.nextRequest();
+      const t1 = g.call('readTopRaw_', 2026, 11);
+      CATS.forEach((c, j) => assert.equal(t1.cats[j].budget - t0.cats[j].budget, c === cat ? amt : 0, c + '（選 ' + cat + '，借 ' + amt + '）'));
+      assert.equal(t1.budget - t0.budget, amt, '總預算多出借入金額');
+      assert.equal(t1.left - t0.left, amt, '剩餘多出借入金額');
+      const d = JSON.parse(g.call('readLog_', 2026).filter(l => l.type === '調用').pop().data);
+      assert.equal(d.absorbed + d.extra, amt);
+      d.absorbed > 0 ? stats.cut++ : stats.plain++;
+    }
+  }
+  assert.ok(stats.cut >= 50 && stats.plain >= 50, '有刪減、沒刪減兩種情況都要測到夠多次：' + JSON.stringify(stats));
+});
+
+test('信封調用：舊格式紀錄（沒有 deltas）照舊只把 extra 加到選的科目', () => {
+  const { g } = fresh(7299);
+  const it = g.call('getEnvelopes_', 2026, 11).accounts[0].items.find(x => x.safe > 1);
+  const t0 = g.call('readTopRaw_', 2026, 11);
+  g.call('borrowEnvelope_', { key: it.key, amount: it.safe, cat: '娛樂' });
+  const log = g.book(2026).getSheetByName('App紀錄'), r = log.getLastRow();
+  log.set(r, 11, JSON.stringify({ absorbed: 0, extra: 37, cat: '娛樂', reason: '' }));   // 模擬舊版寫的紀錄
+  g.nextRequest(); g.ctx.CacheService.getScriptCache().put('LOG2026', null);
+  g.call('bumpVer_');
+  const t1 = g.call('readTopRaw_', 2026, 11);
+  assert.equal(t1.cats[CATS.indexOf('娛樂')].budget - t0.cats[CATS.indexOf('娛樂')].budget, 37);
+  assert.equal(t1.borrowedExtra, 37);
+});
+
 test('信封調用：超過可安全調用金額、0 元會被擋下', () => {
   const { g } = fresh(4);
   const it = g.call('getEnvelopes_', 2026, 11).accounts[0].items.find(x => x.safe > 0);

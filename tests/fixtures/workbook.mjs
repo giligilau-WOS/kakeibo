@@ -9,6 +9,21 @@ export const CATS = ['奉獻', '食物', '教育', '油料', '娛樂', '其他']
 export const TRAVEL_FULL = '國旅專款(不扣日常預算)';
 const FIRST = 16, LAST = 515;
 
+// 模擬試算表的「預算≤可支配現金」自動刪減（簡化版，不是真正的公式）：
+// 可支配現金＝基本額＋台銀第 37 列（信封調用）當月的值；計畫（第 7 列）超過時依序刪減：
+// 教育 → 娛樂、其他刪到下限 → 食物刪到下限 → 食物、油料、娛樂、其他按比例再縮。奉獻不動。
+function cutBudgets(plan, cash, floors) {
+  const b = plan.slice(), total = () => b.reduce((s, x) => s + x, 0);
+  let over = total() - cash;
+  const take = (i, floor) => { if (over <= 0) return; const t = Math.min(over, Math.max(0, b[i] - floor)); b[i] -= t; over -= t; };
+  take(2, 0); take(4, floors.娛樂); take(5, floors.其他); take(1, floors.食物);
+  if (over > 0) {
+    const idx = [1, 3, 4, 5], base = idx.reduce((s, i) => s + b[i], 0);
+    if (base > 0) { const k = Math.min(1, over / base); idx.forEach(i => { b[i] = Math.round(b[i] * (1 - k)); }); }
+  }
+  return b;
+}
+
 function recalcMonth(sh) {
   const sum = (pred) => { let s = 0; for (let r = FIRST; r <= LAST; r++) { const amt = sh.val(r, 14); if (amt === '' || amt === null) continue; if (pred(sh.val(r, 12), sh.val(r, 16))) s += Number(amt) || 0; } return s; };
   let cash = 0, card = 0;
@@ -35,6 +50,16 @@ export function buildWorkbook2026(g, opt = {}) {
     const budgets = opt.budgets || [3000, 12000, 2000, 3000, 2500, 3500];
     budgets.forEach((b, i) => sh.set(8, 2 + i, b));
     sh.set(4, 2, 30000).set(2, 5, 8000).set(4, 14, 0);
+    if (opt.cut) {   // 開啟自動刪減模擬：第 7 列＝計畫，第 8 列由可支配現金算出
+      budgets.forEach((b, i) => sh.set(7, 2 + i, b));
+      sh.set(7, 8, budgets.reduce((s, x) => s + x, 0));
+      book.readHooks.push((s, rg) => {
+        if (s !== sh || rg.r > 14) return;
+        const tw = book.getSheetByName('台銀帳戶(預扣及攤平)'), cash = opt.cut.base + (Number(tw && tw.val(37, 1 + m)) || 0);
+        sh.set(4, 2, cash);
+        cutBudgets(budgets, cash, opt.cut.floors || { 食物: 0, 娛樂: 0, 其他: 0 }).forEach((b, i) => sh.set(8, 2 + i, b));
+      });
+    }
     if (opt.ledger !== false && m <= 11) {
       const n = m === 11 ? 6 : 12, lastDay = m === 11 ? 17 : 28;
       for (let i = 0; i < n; i++) {

@@ -28,7 +28,7 @@ const CONFIG = {
 
 // 後端版本：每次修改這個檔案都要更新（tools/check.mjs 會檢查）。
 // 前端 index.html 的 NEED_BACKEND 若比這個新，App 會提醒「後端還沒部署新版本」。
-const BACKEND_VERSION = '2026.11.21-1600';
+const BACKEND_VERSION = '2026.11.21-1800';
 
 // 各年度檔案的差異（儲存格位置）
 const PROFILE = {
@@ -395,7 +395,7 @@ function readTopRaw_(y, m) {
   cats.push({ name: '國旅', budget: 0, cash: num_(g(13, 14)), card: num_(g(13, 15)), total: num_(g(13, 13)), travel: true });
   let extraSum = 0;
   safe_(function () {
-    borrowExtra_(y, m).forEach(function (b) { extraSum += b.extra; cats.forEach(function (c) { if (c.name === b.cat) c.budget += b.extra; }); });
+    borrowExtra_(y, m).forEach(function (b) { extraSum += b.extra; cats.forEach(function (c) { if (!c.travel) c.budget += b.adj[c.name] || 0; }); });
     transfersFor_(y, m).forEach(function (t) {
       cats.forEach(function (c) { if (c.name === t.acct) c.budget -= t.amount; if (c.name === t.target) c.budget += t.amount; });
     });
@@ -1795,17 +1795,35 @@ function borrowEnvelope_(a) {
   if (!it) throw new Error('找不到這個信封');
   if (amt > it.safe && !a.force) throw new Error('超過可安全調用的 $' + fmt_(it.safe) + '，借出後 ' + (it.next ? it.next.m + ' 月繳費時會不夠' : '年底前會不夠'));
   const cfg = borrowRowFor_(y, a.key);
-  const before = readTop_(y, m).budget;
+  // 試算表的預算公式會在可支配現金不足時自動刪減科目；借進來的錢有一部分會先被公式「補回」那些被刪的科目。
+  // 記下每個科目被補回多少（deltas），App 顯示時再把它們移回使用者選的科目，讓選的科目剛好多出借入金額。
+  const b0 = readTopRaw_(y, m);
   addBorrowCell_(y, m, cfg, amt);
   SpreadsheetApp.flush(); bumpVer_();
-  const after = readTopRaw_(y, m).budget, absorbed = Math.max(0, Math.min(amt, Math.round(after - before)));
+  const b1 = readTopRaw_(y, m), deltas = {};
+  let absorbed = 0;
+  CATS.forEach(function (c, i) { const d = Math.round(b1.cats[i].budget - b0.cats[i].budget); if (d) { deltas[c] = d; absorbed += d; } });
   const cat = CATS.indexOf(a.cat) >= 0 ? a.cat : '食物';
   appendLog_(y, { type: '調用', date: todayStr_(), m: m, name: it.name, amount: amt, acct: cfg.acct, target: a.key, note: cat,
-                  data: JSON.stringify({ absorbed: absorbed, extra: amt - absorbed, cat: cat, reason: a.note || '' }) });
+                  data: JSON.stringify({ absorbed: absorbed, extra: amt - absorbed, cat: cat, reason: a.note || '', deltas: deltas }) });
   return { ok: true, message: '已從「' + it.name + '」調用 $' + fmt_(amt) + ' 到日常，' + cat + '預算 +$' + fmt_(amt) + '；下個月發薪日提醒歸還' };
 }
-function borrowExtra_(y, m) {   // 調用加到科目預算的部分（App 層）
-  return readLog_(y).filter(function (l) { return l.type === '調用' && l.m === m; }).map(function (l) { let d = {}; try { d = JSON.parse(l.data || '{}'); } catch (e) {} return { cat: d.cat || l.note, extra: num_(d.extra) }; });
+// 調用在 App 層對各科目預算的調整：adj＝每個科目要加減的金額，extra＝試算表總預算以外多出的部分。
+// 新紀錄有 deltas：把公式自動補回的金額從原科目扣掉，借入金額全部加到選的科目。
+// 舊紀錄（沒有 deltas）維持舊算法：只把 extra 加到選的科目。
+function borrowExtra_(y, m) {
+  return readLog_(y).filter(function (l) { return l.type === '調用' && l.m === m; }).map(function (l) {
+    let d = {}; try { d = JSON.parse(l.data || '{}'); } catch (e) {}
+    const cat = d.cat || l.note, adj = {};
+    if (d.deltas && typeof d.deltas === 'object') {
+      let sum = 0;
+      Object.keys(d.deltas).forEach(function (c) { const v = num_(d.deltas[c]); adj[c] = (adj[c] || 0) - v; sum += v; });
+      adj[cat] = (adj[cat] || 0) + num_(l.amount);
+      return { cat: cat, adj: adj, extra: num_(l.amount) - sum };
+    }
+    adj[cat] = num_(d.extra);
+    return { cat: cat, adj: adj, extra: num_(d.extra) };
+  });
 }
 function repayBorrow_(a) {
   const t = parseDate_(todayStr_()), y = t.y, m = t.m;
