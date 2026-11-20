@@ -132,6 +132,48 @@ test('記帳：在紀錄頁把付款方式改成另一種（例如現金→一�
   }
 });
 
+test('記帳後復原：任意記一筆（含一卡通自動加值）再復原，流水帳與一卡通餘額都回到原狀', () => {
+  let topupCases = 0;
+  for (let i = 0; i < RUNS; i++) {
+    const R = rng(8100 + i), { g, wb } = fresh(8100 + i), sh = wb.month(11);
+    const before = snap(sh, 16), bal0 = g.call('ecardBalance_');
+    const pay = R.pick(['現金', '信用卡', '一卡通']);
+    const res = g.call('api', 't', 'add', { date: '2026-11-' + pad(R.int(1, 18)), cat: R.pick(CATS.concat(['國旅'])), item: R.pick(['早餐', '捷運', '']), amount: R.pick([1, 320, 321, 1000, R.int(1, 2500)]), pay, rid: 'a' + i });
+    if (res.written.length > 1) topupCases++;
+    assert.equal(res.written.length, ledgerRows(sh).length - ledgerRows({ val: (r, c) => JSON.parse(before).find(([k]) => k === r + ',' + c)?.[1].v ?? '' }).length, '回報的列數要等於實際新增的列數');
+    g.nextRequest();
+    g.call('api', 't', 'undoAdd', { y: res.y, m: res.m, rows: res.written, rid: 'u' + i });
+    g.nextRequest();
+    assert.equal(snap(sh, 16), before, '復原後流水帳要回到原狀');
+    assert.equal(g.call('ecardBalance_'), bal0, '一卡通餘額要回到原狀');
+  }
+  assert.ok(topupCases >= 30, '含自動加值的情況測到太少：' + topupCases);
+});
+
+test('記帳後復原：那一列已被改過就整批不動；同一個復原請求送兩次只執行一次', () => {
+  const { g, wb } = fresh(30), sh = wb.month(11);
+  const a = g.call('api', 't', 'add', { date: '2026-11-18', cat: '食物', item: '早餐', amount: 80, pay: '一卡通', rid: 'x1' });   // 一卡通餘額 320，不會加值
+  const b = g.call('api', 't', 'add', { date: '2026-11-18', cat: '食物', item: '捷運', amount: 900, pay: '一卡通', rid: 'x2' });  // 會自動加值
+  assert.ok(b.written.length >= 2);
+  g.nextRequest();
+  g.call('updateEntry_', { y: 2026, m: 11, row: b.written[1].row, date: '2026-11-18', cat: '一卡通儲值', item: '一卡通自動加值', amount: 1000, pay: '信用卡', note: '' });   // 有人把加值金額改了
+  const mid = snap(sh, 16);
+  g.nextRequest();
+  assert.throws(() => g.call('api', 't', 'undoAdd', { y: 2026, m: 11, rows: b.written, rid: 'y1' }), /已經不是剛記的那筆/);
+  assert.equal(snap(sh, 16), mid, '不一致時一列都不能刪');
+  g.nextRequest();
+  g.call('api', 't', 'undoAdd', { y: 2026, m: 11, rows: a.written, rid: 'y2' });
+  const afterUndo = snap(sh, 16);
+  g.nextRequest();
+  // 復原後那一列空出來，又記了一筆內容不同的新紀錄；舊的復原請求重送（同一個 rid）不能把新紀錄刪掉
+  g.call('api', 't', 'add', { date: '2026-11-18', cat: '食物', item: '午餐', amount: 150, pay: '現金', rid: 'x3' });
+  const withNew = snap(sh, 16);
+  g.nextRequest();
+  g.call('api', 't', 'undoAdd', { y: 2026, m: 11, rows: a.written, rid: 'y2' });
+  assert.equal(snap(sh, 16), withNew, '重送的復原不能再刪東西');
+  assert.notEqual(afterUndo, withNew);
+});
+
 // ---------------------------------------------------------------- 一卡通
 test('一卡通：餘額守恆＝校正值＋自動加值 − 一卡通消費；加值筆數剛好夠用', () => {
   for (let i = 0; i < RUNS; i++) {

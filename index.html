@@ -152,6 +152,21 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 .datebtn{height:44px;padding:0 14px;border-radius:22px;border:1px solid var(--line2);background:var(--card);font-size:14px}
 .datebtn.past{border:2px solid var(--amber);background:var(--amberSoft);color:var(--amberInk);font-weight:700}
 .lbl{font-size:12px;color:var(--sub);font-weight:500;margin:10px 0 6px}
+/* 記帳頁：金額、數字鍵、「記一筆」固定在下方，上面的科目／項目可以捲動，不用捲到底才記得了帳 */
+aside#v-entry.view{padding-bottom:0}   /* 固定區要貼齊底部；下方空白由固定區自己留 */
+.dock{position:sticky;bottom:0;z-index:3;background:var(--bg);margin:10px -16px 0;padding:8px 16px 10px;box-shadow:0 -8px 14px -12px rgba(27,36,48,.45)}
+.dock .amount{margin:0 0 8px;padding:6px 12px 6px 14px}
+.dock .amtrow{display:flex;align-items:center;gap:8px}
+.dock .amount .v{flex:1;font-size:34px;line-height:1.15}
+.dock .keys{margin-top:0;gap:6px}
+.dock .keys button{height:44px}
+.dock .submit{margin-top:8px}
+.bline{display:block;width:100%;border:none;background:none;padding:0;text-align:left;font-size:12px;color:var(--tint);line-height:1.5}
+.bline .warn{color:var(--red);font-weight:700}
+.bsp{width:44px;height:44px;border-radius:12px;border:none;background:var(--card);color:var(--tint);flex-shrink:0;display:flex;align-items:center;justify-content:center}
+.items.wrap{flex-wrap:wrap;overflow:visible}
+.ndetail{background:var(--soft);border-radius:14px;padding:8px 12px;margin-top:10px}
+#toast .tact{margin-left:10px;height:34px;padding:0 14px;border-radius:17px;border:none;background:var(--blue);color:#fff;font-weight:700;font-size:14px;vertical-align:middle}
 @media (min-width:700px){
   .grid2{grid-template-columns:repeat(2,minmax(0,1fr))}
   .grid3{grid-template-columns:repeat(3,minmax(0,1fr))}
@@ -166,6 +181,7 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
   nav#nav .nav-entry{display:none}
   aside#v-entry{display:block!important;height:100%;overflow-y:auto;background:var(--card);border-left:1px solid var(--line)}
   aside#v-entry .keys button{background:var(--bg)}
+  aside#v-entry .dock{background:var(--card)}
   .wide-only{display:block!important}
 }
 .wide-only{display:none}
@@ -210,13 +226,14 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.21-1500';
+const APP_VERSION = '2026.11.21-1600';
 // 這個前端需要的最低後端版本（Code_單一檔案版.gs 的 BACKEND_VERSION）。前端用到後端新功能時要跟著調高。
-const NEED_BACKEND = '2026.11.21-1500';
+const NEED_BACKEND = '2026.11.21-1600';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
   e: { amt: '', cat: '食物', item: '', custom: false, customText: '', pay: '現金', date: null } };
+try { S.e.showInfo = localStorage.getItem('kakeiboInfo') === '1'; } catch (e) {}   // 記帳頁「詳細資訊」展開與否
 
 // ---------- 工具 ----------
 function call(method, args) {
@@ -263,7 +280,14 @@ function fmt(n) { return Math.round(Number(n) || 0).toString().replace(/\B(?=(\d
 function money(n) { return (n < 0 ? '−$' : '$') + fmt(Math.abs(n)); }
 function pct(a, b) { return b ? Math.round(a / b * 100) : 0; }
 function $(id) { return document.getElementById(id); }
-function toast(msg, ms) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast._h); toast._h = setTimeout(function () { t.style.display = 'none'; }, ms || 2600); }
+function toast(msg, ms, action) {
+  const t = $('toast'); t.textContent = msg; t.onclick = null;
+  if (action) {   // 例如記帳後的「復原」：按一次就收起提示
+    const b = document.createElement('button'); b.className = 'tact'; b.textContent = action.label; t.appendChild(b);
+    t.onclick = function (e) { if (e.target !== b) return; t.style.display = 'none'; t.onclick = null; action.fn(); };
+  }
+  t.style.display = 'block'; clearTimeout(toast._h); toast._h = setTimeout(function () { t.style.display = 'none'; t.onclick = null; }, ms || 2600);
+}
 function err(e) { toast('發生錯誤：' + (e && e.message ? e.message : e), 4000); }
 function ymAdd(ym, k) { let y = ym.y, m = ym.m + k; while (m < 1) { m += 12; y--; } while (m > 12) { m -= 12; y++; } return { y: y, m: m }; }
 function todayYM() { const d = S.form ? S.form.today : new Date().toISOString().slice(0, 10); return { y: +d.slice(0, 4), m: +d.slice(5, 7) }; }
@@ -489,7 +513,7 @@ function renderEntry() {
   let h = '';
   if (S.queue && S.queue.length) h += '<div class="qbar">' + S.queue.length + ' 筆離線記帳等待上傳<button class="chip" data-act="flush" style="height:32px">立即上傳</button></div>';
   h += '<div class="row"><div class="col"><span class="sub">' + (S.dash ? S.dash.y + '年' + S.dash.m + '月｜' : '') + '本月還能花</span><span style="font-size:20px;font-weight:700">' + leftTxt + '</span></div>' +
-    '<div style="display:flex;gap:6px;align-items:center">' + themeBtn(40) + '<button class="datebtn ' + (isToday ? '' : 'past') + '" data-act="date">' + (isToday ? '今天 ' : '補記 ') + md(E.date) + '（' + wk(E.date) + '）</button></div></div>';
+    '<div style="display:flex;gap:6px;align-items:center">' + themeBtn(44) + '<button class="datebtn ' + (isToday ? '' : 'past') + '" data-act="date">' + (isToday ? '今天 ' : '補記 ') + md(E.date) + '（' + wk(E.date) + '）</button></div></div>';
   h += '<div class="grid3" style="grid-template-columns:repeat(4,minmax(0,1fr));margin-top:12px;gap:6px">' +
     '<button class="seg cash ' + (E.pay === '現金' ? 'on' : '') + '" data-act="pay" data-v="現金">現金</button>' +
     '<button class="seg cardb ' + (E.pay === '信用卡' ? 'on' : '') + '" data-act="pay" data-v="信用卡">信用卡</button>' +
@@ -498,10 +522,12 @@ function renderEntry() {
   if (pre) return renderPrepaidEntry(el, h);
   const items = f.items[E.cat] || [];
   const bi = catBudgetInfo();
-  let bar = '', info = '';
-  if (bi && bi.other) info = '<div class="binfo">補記其他月份，不顯示本月科目進度</div>';
-  else if (bi && bi.c.travel) info = '<div class="binfo">' + esc(E.cat) + '：國旅專款不扣日常預算｜本月已用 <b>$' + fmt(bi.c.total) + '</b></div>';
-  else if (bi && !bi.c.budget) info = '<div class="binfo">' + esc(E.cat) + '：本月沒有編列預算｜已用 <b>$' + fmt(bi.c.total) + '</b></div>';
+  // 一行摘要（放在下方金額框裡）＋詳細資訊（點摘要展開，放在上方）
+  let bar = '', info = '', line = '';
+  const W = function (t) { return '<span class="warn">' + t + '</span>'; };
+  if (bi && bi.other) { info = '<div class="binfo">補記其他月份，不顯示本月科目進度</div>'; line = '補記其他月份'; }
+  else if (bi && bi.c.travel) { info = '<div class="binfo">' + esc(E.cat) + '：國旅專款不扣日常預算｜本月已用 <b>$' + fmt(bi.c.total) + '</b></div>'; line = esc(E.cat) + '｜不扣日常預算｜已用 $' + fmt(bi.c.total); }
+  else if (bi && !bi.c.budget) { info = '<div class="binfo">' + esc(E.cat) + '：本月沒有編列預算｜已用 <b>$' + fmt(bi.c.total) + '</b></div>'; line = esc(E.cat) + '｜沒有預算｜已用 $' + fmt(bi.c.total); }
   else if (bi) {
     bar = '<i class="fill' + (bi.rem < 0 || bi.after < 0 ? ' over' : '') + '" style="width:' + bi.usedPct.toFixed(1) + '%"></i>' +
       (bi.add ? '<i class="pend' + (bi.after < 0 ? ' over' : '') + '" style="left:' + bi.usedPct.toFixed(1) + '%;width:' + Math.max(0, bi.newPct - bi.usedPct).toFixed(1) + '%"></i>' : '') +
@@ -517,36 +543,59 @@ function renderEntry() {
       info += '<div class="binfo">' + (bi.after < 0 ? '<span class="warn">記完後本月將超出預算 $' + fmt(-bi.after) + '</span>' :
         (bi.isToday ? (bi.todayAfter >= 0 ? '記完後今天還剩 <b>$' + fmt(bi.todayAfter) + '</b>' : '<span class="warn">記完後今天超出 $' + fmt(-bi.todayAfter) + '</span>，明天起每日額度約 <b>$' + fmt(bi.nextAllowance) + '</b>') : '記完後本月剩 <b>$' + fmt(bi.after) + '</b>')) + '</div>';
     } else if (bi.todayLeft < 0) info += '<div class="binfo">明天起每日額度約 <b>$' + fmt(bi.nextAllowance) + '</b></div>';
+    // 摘要只放最重要的兩個數字；輸入金額後改成顯示「記完後」，超支用紅字
+    if (bi.add && bi.after < 0) line = esc(E.cat) + '｜' + W('記完後本月超支 $' + fmt(-bi.after));
+    else if (bi.add && bi.isToday) line = esc(E.cat) + '｜' + (bi.todayAfter >= 0 ? '記完後今天還剩 $' + fmt(bi.todayAfter) : W('記完後今天超出 $' + fmt(-bi.todayAfter))) + '｜本月剩 $' + fmt(bi.after);
+    else if (bi.add) line = esc(E.cat) + '｜記完後本月剩 $' + fmt(bi.after);
+    else line = esc(E.cat) + '｜今天' + (bi.todayLeft >= 0 ? '還剩 $' + fmt(bi.todayLeft) : W('超出 $' + fmt(-bi.todayLeft))) + '｜本月' + (bi.rem >= 0 ? '剩 $' + fmt(bi.rem) : W('超支 $' + fmt(-bi.rem)));
   }
   let ecInfo = '';
   if (E.pay === '一卡通') {
     const eb = S.dash ? S.dash.ecard : null, v = evalExpr(E.amt), add = isNaN(v) ? 0 : Math.max(0, Math.round(v));
-    if (eb === null || eb === undefined) ecInfo = '<div class="binfo">還沒有一卡通餘額 <button class="chip" data-act="ecal" style="height:28px;font-size:12px;padding:0 10px">校正餘額</button></div>';
+    if (eb === null || eb === undefined) { ecInfo = '<div class="binfo">還沒有一卡通餘額 <button class="chip" data-act="ecal" style="height:28px;font-size:12px;padding:0 10px">校正餘額</button></div>'; line += '｜' + W('一卡通未校正'); }
     else {
       const need = add > eb ? Math.ceil((add - eb) / 500) * 500 : 0;
       ecInfo = '<div class="binfo">一卡通餘額約 <b>$' + fmt(eb) + '</b>' + (add ? (need ? '｜<span class="warn">餘額不足，會自動加值 $' + fmt(need) + '（記成刷卡）</span>，付款後約 $' + fmt(eb + need - add) : '｜付款後約 <b>$' + fmt(eb - add) + '</b>') : '') +
         ' <button class="chip" data-act="ecal" style="height:28px;font-size:12px;padding:0 10px">校正</button></div>';
+      line += need ? '｜' + W('會自動加值 $' + fmt(need)) : '｜一卡通 $' + fmt(add ? eb - add : eb);
     }
   }
-  h += '<div class="amount">' + bar + '<div style="font-size:12px;font-weight:500;color:var(--tint)">' + (E.pay === '現金' ? '計入：現金實支' : (E.pay === '一卡通' ? '計入：一卡通（扣科目預算，不算現金、不進信用卡帳單）' : '計入：刷卡實支（' + (+E.date.slice(8, 10) <= 22 ? '本期帳單，次月 6 日扣款' : '下期帳單，下下月 6 日扣款') + '）')) + '</div>' + ecInfo + info + '<div class="expr">' + esc(exprDisplay(E.amt).small) + '</div><div class="v">$' + exprDisplay(E.amt).big + '</div></div>';
+  const how = E.pay === '現金' ? '計入：現金實支' : (E.pay === '一卡通' ? '計入：一卡通（扣科目預算，不算現金、不進信用卡帳單）' : '計入：刷卡實支（' + (+E.date.slice(8, 10) <= 22 ? '本期帳單，次月 6 日扣款' : '下期帳單，下下月 6 日扣款') + '）');
+  if (E.showInfo) h += '<div class="ndetail"><div class="binfo" style="font-weight:500">' + how + '</div>' + ecInfo + info + '</div>';
   // 快速記帳範本
   const q = [];
   if (f.last) q.push({ t: '↺ 再記一次：' + f.last.item + ' $' + fmt(f.last.amount), d: f.last });
   (f.quick || []).forEach(function (x) { if (!f.last || x.cat + x.item + x.pay + x.amount !== f.last.cat + f.last.item + f.last.pay + f.last.amount) q.push({ t: x.item + ' $' + fmt(x.amount) + (x.pay === '信用卡' ? '・卡' : ''), d: x }); });
-  if (q.length) h += '<div class="lbl">快速記帳</div><div class="items">' + q.map(function (x, i) { return '<button class="chip qk" data-act="quick" data-i="' + i + '" style="height:38px;font-size:13px">' + esc(x.t) + '</button>'; }).join('') + '</div>';
+  if (q.length) h += '<div class="items" style="margin-top:10px" aria-label="快速記帳">' + q.map(function (x, i) { return '<button class="chip qk" data-act="quick" data-i="' + i + '" style="font-size:13px">' + esc(x.t) + '</button>'; }).join('') + '</div>';
   S.quickList = q;
-  h += '<div class="lbl">科目</div><div class="cats">' + f.cats.map(function (c) { return '<button class="chip ' + (E.cat === c ? 'on' : '') + '" data-act="cat" data-v="' + esc(c) + '">' + esc(c) + '</button>'; }).join('') + '</div>';
-  h += '<div class="lbl">消費項目</div>';
+  h += '<div class="cats" style="margin-top:10px" aria-label="科目">' + f.cats.map(function (c) { return '<button class="chip ' + (E.cat === c ? 'on' : '') + '" data-act="cat" data-v="' + esc(c) + '">' + esc(c) + '</button>'; }).join('') + '</div>';
+  const noteOpen = E.noteOpen || E.note;
+  h += '<div class="lbl row" style="margin-bottom:4px"><span>消費項目</span>' + (noteOpen ? '' : '<button class="chip" data-act="noteopen" style="height:32px;font-size:12px;padding:0 12px;color:var(--sub)">＋備註</button>') + '</div>';
   if (E.custom) {
     h += '<div class="row"><input class="f" id="customItem" placeholder="輸入項目，例如：修鞋" value="' + esc(E.customText) + '" style="border:2px solid var(--main);border-radius:22px"><button class="chip" data-act="nocustom">常用</button></div>';
   } else {
-    h += '<div class="items"><button class="chip" data-act="custom" style="border:1px dashed var(--main);color:var(--tint)">＋自行輸入</button>' +
-      items.map(function (it) { return '<button class="chip ' + (E.item === it ? 'on' : '') + '" data-act="item" data-v="' + esc(it) + '">' + esc(it) + '</button>'; }).join('') + '</div>';
+    // 自動換行；項目多時先顯示 5 個，其餘收在「更多…」（目前選的那個一定顯示）
+    const LIMIT = 5, showAll = E.moreItems || items.length <= LIMIT + 1;
+    const shown = showAll ? items : items.slice(0, LIMIT).concat(items.indexOf(E.item) >= LIMIT ? [E.item] : []);
+    h += '<div class="items wrap"><button class="chip" data-act="custom" style="border:1px dashed var(--main);color:var(--tint)">＋自行輸入</button>' +
+      shown.map(function (it) { return '<button class="chip ' + (E.item === it ? 'on' : '') + '" data-act="item" data-v="' + esc(it) + '">' + esc(it) + '</button>'; }).join('') +
+      (showAll ? '' : '<button class="chip" data-act="more" style="color:var(--sub)">更多 ' + (items.length - shown.length) + ' 個…</button>') + '</div>';
   }
-  h += keypadHTML('key');
-  h += '<input class="f" id="note" placeholder="備註（選填）" style="margin-top:10px" value="' + esc(E.note || '') + '">';
-  h += '<button class="submit" data-act="submit">記一筆（' + E.pay + '）</button>';
+  if (noteOpen) h += '<input class="f" id="note" placeholder="備註（選填）" style="margin-top:10px" value="' + esc(E.note || '') + '">';
+  // 下方固定區：摘要＋金額＋數字鍵＋記一筆
+  h += '<div class="dock"><div class="amount">' + bar +
+    '<button class="bline" data-act="info" aria-expanded="' + (E.showInfo ? 'true' : 'false') + '">' + (line || how) + ' <span style="opacity:.7">' + (E.showInfo ? '▴' : '▾') + '</span></button>' +
+    '<div class="amtrow"><div class="expr" style="flex:1;text-align:left;min-height:0">' + esc(exprDisplay(E.amt).small) + '</div><div class="v" style="flex:none">$' + exprDisplay(E.amt).big + '</div><button class="bsp" data-act="key" data-v="⌫" aria-label="刪除"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6h11v12H9l-5-6z"/><path d="M13 10l4 4M17 10l-4 4"/></svg></button></div></div>' +
+    entryKeypadHTML() +
+    '<button class="submit" data-act="submit">記一筆（' + E.pay + '）</button></div>';
   el.innerHTML = h;
+}
+// 記帳頁的數字鍵：4×4，C 放進鍵盤、⌫ 放在金額旁、不需要「＝ 計算」（記一筆時會自動算好）
+function entryKeypadHTML() {
+  const rows = ['7', '8', '9', '÷', '4', '5', '6', '×', '1', '2', '3', '−', 'C', '0', '00', '+'];
+  return '<div class="keys">' + rows.map(function (k) {
+    return '<button data-act="key" data-v="' + k + '" class="' + (OPS.indexOf(k) >= 0 || k === 'C' ? 'op' : '') + '"' + (k === 'C' ? ' aria-label="清除"' : '') + '>' + k + '</button>';
+  }).join('') + '</div>';
 }
 function renderPrepaidEntry(el, h) {
   const E = S.e, pp = ppFor(E.date, renderEntry);
@@ -563,15 +612,21 @@ function renderPrepaidEntry(el, h) {
     const v = evalExpr(E.amt);
     if (!isNaN(v) && v && it.planned && Math.round(v) !== it.planned) info += '<div class="binfo">' + (v > it.planned ? '比計畫多 <b>$' + fmt(v - it.planned) + '</b>' : '比計畫少 <b>$' + fmt(it.planned - v) + '</b>') + '</div>';
   }
-  h += '<div class="amount"><div style="font-size:12px;font-weight:500;color:var(--tint)">計入：預扣帳戶繳費（不扣生活預算）</div>' + info + '<div class="expr">' + esc(exprDisplay(E.amt).small) + '</div><div class="v">$' + exprDisplay(E.amt).big + '</div></div>';
+  // 預扣模式也一樣：項目清單在上面捲動，金額、數字鍵、記一筆固定在下方
+  if (E.showInfo) h += '<div class="ndetail"><div class="binfo" style="font-weight:500">計入：預扣帳戶繳費（不扣生活預算）</div>' + info + '</div>';
+  const pline = it ? esc(it.name) + '｜' + (it.paid ? '已繳 $' + fmt(it.paid) : (it.status === 'overdue' ? '<span class="warn">已逾期</span>' : (it.due ? '本月應繳 $' + fmt(it.planned) : '本月不用繳'))) : '請選擇預扣項目';
   h += '<div class="lbl">預扣項目（' + pp.m + '月：應繳 ' + pp.due.filter(function (x) { return x.due; }).length + ' 項，未繳 ' + pp.unpaid + ' 項）</div><div class="ppgrid">' +
     list.map(function (x) {
       const cls = x.paid ? 'paid' : (x.status === 'overdue' ? 'late' : (x.due ? 'due' : ''));
       return '<button class="chip pp ' + cls + (x.key === E.ppKey ? ' on' : '') + '" data-act="pp" data-v="' + esc(x.key) + '"><span>' + esc(x.name) + '</span>' + (x.paid ? '<em>✓</em>' : (x.due ? '<em>' + (x.status === 'overdue' ? '!' : '$' + fmt(x.planned)) + '</em>' : '')) + '</button>';
     }).join('') + '</div>';
-  h += keypadHTML('key');
-  h += '<input class="f" id="note" placeholder="備註（選填）" style="margin-top:10px" value="' + esc(E.note || '') + '">';
-  h += '<button class="submit" data-act="submit">記一筆繳費（' + esc(it ? it.acct : '預扣帳戶') + '）</button>';
+  if (E.noteOpen || E.note) h += '<input class="f" id="note" placeholder="備註（選填）" style="margin-top:10px" value="' + esc(E.note || '') + '">';
+  else h += '<div style="text-align:right;margin-top:8px"><button class="chip" data-act="noteopen" style="height:32px;font-size:12px;padding:0 12px;color:var(--sub)">＋備註</button></div>';
+  h += '<div class="dock"><div class="amount"><button class="bline" data-act="info" aria-expanded="' + (E.showInfo ? 'true' : 'false') + '">' + pline + ' <span style="opacity:.7">' + (E.showInfo ? '▴' : '▾') + '</span></button>' +
+    '<div class="amtrow"><div class="expr" style="flex:1;text-align:left;min-height:0">' + esc(exprDisplay(E.amt).small) + '</div><div class="v" style="flex:none">$' + exprDisplay(E.amt).big + '</div>' +
+    '<button class="bsp" data-act="key" data-v="⌫" aria-label="刪除"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6h11v12H9l-5-6z"/><path d="M13 10l4 4M17 10l-4 4"/></svg></button></div></div>' +
+    entryKeypadHTML() +
+    '<button class="submit" data-act="submit">記一筆繳費（' + esc(it ? it.acct : '預扣帳戶') + '）</button></div>';
   el.innerHTML = h;
 }
 $('v-entry').addEventListener('click', function (e) {
@@ -580,7 +635,7 @@ $('v-entry').addEventListener('click', function (e) {
   const keepNote = function () { const n = $('note'); if (n) E.note = n.value; const c = $('customItem'); if (c) E.customText = c.value; };
   keepNote();
   if (a === 'pay') { if ((v === '預扣') !== (E.pay === '預扣')) { E.amt = ''; E.ppTouched = false; } E.pay = v; }
-  else if (a === 'cat') { E.cat = v; E.item = (S.form.items[v] || [])[0] || v; E.custom = false; }
+  else if (a === 'cat') { E.cat = v; E.item = (S.form.items[v] || [])[0] || v; E.custom = false; E.moreItems = false; }
   else if (a === 'item') E.item = v;
   else if (a === 'custom') E.custom = true;
   else if (a === 'nocustom') E.custom = false;
@@ -588,6 +643,9 @@ $('v-entry').addEventListener('click', function (e) {
   else if (a === 'pp') { E.ppKey = v; E.amt = ''; E.ppTouched = false; }
   else if (a === 'quick') { const q = S.quickList[+b.dataset.i].d; E.cat = q.cat; E.item = q.item; E.pay = q.pay; E.amt = String(q.amount); E.custom = (S.form.items[q.cat] || []).indexOf(q.item) < 0; E.customText = E.custom ? q.item : ''; toast('已帶入：' + q.item + ' $' + fmt(q.amount) + '，確認後按「記一筆」', 1800); }
   else if (a === 'flush') return flushQueue(true);
+  else if (a === 'info') { E.showInfo = !E.showInfo; try { localStorage.setItem('kakeiboInfo', E.showInfo ? '1' : ''); } catch (er) {} }
+  else if (a === 'more') E.moreItems = true;
+  else if (a === 'noteopen') { E.noteOpen = true; renderEntry(); const n = $('note'); if (n) n.focus(); return; }
   else if (a === 'ecal') {
     const cur = S.dash && S.dash.ecard != null ? S.dash.ecard : '';
     const v = prompt('一卡通目前實際餘額（可在超商、捷運站或一卡通 App 查）：', cur);
@@ -666,16 +724,28 @@ function submitEntry() {
   btn.disabled = true; btn.textContent = '記錄中…';
   const exprNote = hasOp(E.amt) ? '〔' + E.amt.replace(/−/g, '-') + '〕' : '';
   const args = { date: E.date, cat: E.cat, item: item, amount: amt, pay: E.pay, note: ((E.note || '') + (E.note && exprNote ? ' ' : '') + exprNote), rid: newRid() };
-  const applyLocal = function () {
+  const cat0 = E.cat, pay0 = E.pay, date0 = E.date;
+  const applyLocal = function (sign) {   // sign = -1：離線暫存被復原時，把畫面上先加的數字減回來
+    const a = amt * (sign || 1);
     if (!S.dash) return;
-    const sm = +E.date.slice(0, 4) === S.dash.y && +E.date.slice(5, 7) === S.dash.m;
+    const sm = +date0.slice(0, 4) === S.dash.y && +date0.slice(5, 7) === S.dash.m;
     if (!sm) return;
-    const isT = S.form && E.date === S.form.today;
-    S.dash.cats.forEach(function (c) { if (c.name === E.cat) { c.total += amt; if (E.pay === '現金') c.cash += amt; else c.card += amt; if (isT) { c.today = (c.today || 0) + amt; c.todayLeft = (c.allowance || 0) - c.today; } } });
-    if (E.cat !== '國旅') { S.dash.spent += amt; S.dash.left -= amt; if (E.pay !== '現金') S.dash.cardSpent += amt; S.dash.count += 1; if (isT) { S.dash.todaySpent += amt; S.dash.todayLeft -= amt; } }
+    const isT = S.form && date0 === S.form.today;
+    S.dash.cats.forEach(function (c) { if (c.name === cat0) { c.total += a; if (pay0 === '現金') c.cash += a; else c.card += a; if (isT) { c.today = (c.today || 0) + a; c.todayLeft = (c.allowance || 0) - c.today; } } });
+    if (cat0 !== '國旅') { S.dash.spent += a; S.dash.left -= a; if (pay0 !== '現金') S.dash.cardSpent += a; S.dash.count += (sign || 1); if (isT) { S.dash.todaySpent += a; S.dash.todayLeft -= a; } }
+  };
+  const undoSent = function (r) {   // 已寫入試算表：請後端刪掉剛寫的列（含一卡通自動加值）
+    call('undoAdd', { y: r.y, m: r.m, rows: r.written, rid: newRid() }).then(function (u) {
+      toast(u.message, 3000); if (S.dash && u.ecard !== undefined) S.dash.ecard = u.ecard; afterWrite();
+    }).catch(err);
+  };
+  const undoQueued = function () {   // 還在離線佇列：直接從佇列拿掉
+    const n = S.queue.length; S.queue = S.queue.filter(function (q) { return !(q.args && q.args.rid === args.rid); });
+    if (S.queue.length === n) return toast('這筆已經上傳了，請到紀錄頁刪除');
+    lsSet('kakeiboQueue', S.queue); applyLocal(-1); toast('已取消這筆暫存的記帳'); renderEntry();
   };
   call('add', args).then(function (r) {
-    toast(r.message + (r.warnFull ? '（本月已接近 500 筆上限）' : ''), 3200);
+    toast(r.message + (r.warnFull ? '（本月已接近 500 筆上限）' : ''), 6000, r.written ? { label: '復原', fn: function () { undoSent(r); } } : null);
     applyLocal(); if (S.dash) { if (r.left != null) S.dash.left = r.left; if (r.ecard !== undefined) S.dash.ecard = r.ecard; }
     S.form.last = { cat: E.cat, item: item, pay: E.pay, amount: amt };
     E.amt = ''; E.note = ''; E.custom = false; E.customText = '';
@@ -683,7 +753,7 @@ function submitEntry() {
   }).catch(function (e) {
     if (isNetErr(e)) {
       S.queue.push({ method: 'add', args: args, t: Date.now() }); lsSet('kakeiboQueue', S.queue);
-      applyLocal(); toast('目前離線，已暫存（共 ' + S.queue.length + ' 筆），連線後自動上傳', 3200);
+      applyLocal(); toast('目前離線，已暫存（共 ' + S.queue.length + ' 筆），連線後自動上傳', 6000, { label: '復原', fn: undoQueued });
       E.amt = ''; E.note = ''; E.custom = false; E.customText = '';
     } else err(e);
     renderEntry();

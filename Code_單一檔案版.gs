@@ -28,7 +28,7 @@ const CONFIG = {
 
 // 後端版本：每次修改這個檔案都要更新（tools/check.mjs 會檢查）。
 // 前端 index.html 的 NEED_BACKEND 若比這個新，App 會提醒「後端還沒部署新版本」。
-const BACKEND_VERSION = '2026.11.21-1500';
+const BACKEND_VERSION = '2026.11.21-1600';
 
 // 各年度檔案的差異（儲存格位置）
 const PROFILE = {
@@ -177,7 +177,7 @@ function api(k, method, args) {
 // ---- 防止重送重複記帳：前端每筆記帳／繳費都帶一個請求編號 rid ----
 // 情境：試算表已經寫入，但手機沒收到回應（逾時），App 放進離線佇列再送一次。
 // 同一個 rid 第二次送來時直接略過，不再寫入。最近 200 個 rid 存在 Script Properties。
-const RID_METHODS = { add: true, payPrepaid: true, saveSub: true, undoSub: true };
+const RID_METHODS = { add: true, payPrepaid: true, saveSub: true, undoSub: true, undoAdd: true };
 const RID_KEEP = 200;
 function ridMap_() { try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('RIDS') || '{}'); } catch (e) { return {}; } }
 function ridSave_(map) {
@@ -212,6 +212,7 @@ function route_(method, args) {
     case 'subs': return getSubs_(+args.y, +args.m);
     case 'saveSub': return saveSub_(args);
     case 'undoSub': return undoSub_(args);
+    case 'undoAdd': return undoAdd_(args);
     case 'add': return addEntry_(args);
     case 'update': return updateEntry_(args);
     case 'delete': return deleteEntry_(args);
@@ -522,9 +523,10 @@ function addEntry_(a) {
     sh.getRange(row, 16, 1, 2).setValues([[pay, String(a.note || '')]]);
     SpreadsheetApp.flush();
     bumpVer_();
-    var res = { ok: true, row: row, used: used + 1, warnFull: used + 1 >= 480, date: date, pay: payShort_(pay) };
+    var res = { ok: true, row: row, used: used + 1, warnFull: used + 1 >= 480, date: date, pay: payShort_(pay), y: d.y, m: d.m,
+                written: [{ row: row, date: date, item: item || cat, amount: amt }] };   // 給「復原」用：剛寫入的列
   } finally { lock.releaseLock(); }
-  for (let k = 0; k < topups; k++) addEntry_({ date: date, cat: ECARD_TOPUP_CAT, item: '一卡通自動加值', amount: 500, pay: '信用卡', note: '自動加值（App 依一卡通餘額推算）' });
+  for (let k = 0; k < topups; k++) res.written = res.written.concat(addEntry_({ date: date, cat: ECARD_TOPUP_CAT, item: '一卡通自動加值', amount: 500, pay: '信用卡', note: '自動加值（App 依一卡通餘額推算）', noTopup: true }).written);
   const top = readTop_(d.y, d.m);
   res.left = top.left;
   res.message = '已記錄 ' + d.m + '/' + d.d + '（' + res.pay + '）' + (item || cat) + ' $' + fmt_(amt) + '｜本月還能花 $' + fmt_(top.left);
@@ -562,6 +564,25 @@ function deleteEntry_(a) {
   sh.getRange(row, 16, 1, 2).clearContent();     // P:Q
   bumpVer_();
   return { ok: true, message: '已刪除' };
+}
+
+// 記帳後馬上「復原」：刪掉剛寫入的列（含一卡通自動加值）。每一列都要和當初寫入的內容一致才刪，
+// 不一致（例如已經在別處改過）就整批不動，請使用者到紀錄頁處理。
+function undoAdd_(a) {
+  const y = +a.y, m = +a.m, rows = a.rows || [];
+  if (!rows.length) throw new Error('沒有可以復原的紀錄');
+  const lock = LockService.getScriptLock(); lock.waitLock(10000);
+  try {
+    const now = readLedgerRaw_(y, m);
+    rows.forEach(function (w) {
+      const r = now.filter(function (x) { return x.row === +w.row; })[0];
+      if (!r || r.date !== String(w.date) || r.item !== String(w.item) || r.amount !== +w.amount)
+        throw new Error('第 ' + w.row + ' 列已經不是剛記的那筆（可能已被修改或刪除），沒有復原；請到紀錄頁確認');
+    });
+    rows.forEach(function (w) { deleteEntry_({ y: y, m: m, row: +w.row }); });
+  } finally { lock.releaseLock(); }
+  const top = readTop_(y, m);
+  return { ok: true, left: top.left, ecard: safe_(function () { return ecardBalance_(); }), message: '已復原：' + rows[0].item + ' $' + fmt_(rows[0].amount) + (rows.length > 1 ? '（含一卡通自動加值 ' + (rows.length - 1) + ' 筆）' : '') };
 }
 
 function setCircled_(y, m) {

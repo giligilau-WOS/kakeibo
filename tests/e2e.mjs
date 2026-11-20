@@ -46,7 +46,7 @@ try {
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) consoleErrors.push(m.text()); });
   page.on('pageerror', e => consoleErrors.push('pageerror: ' + e.message));
   page.on('dialog', d => d.accept());
-  await page.route('**/*', async route => {
+  const handler = async route => {   // 其他尺寸的頁面也共用同一個假後端
     const req = route.request(), url = req.url();
     if (url.startsWith(BASE)) return route.continue();
     if (url.startsWith(GAS_URL)) {
@@ -69,7 +69,8 @@ try {
       return route.fulfill({ status: 200, contentType: 'application/json', body: text });
     }
     external.push(url); return route.abort();
-  });
+  };
+  await page.route('**/*', handler);
   const shot = n => page.screenshot({ path: join(OUT, n + '.png') });
   const toastHas = (re, ms = 5000) => page.waitForFunction(r => new RegExp(r).test(document.getElementById('toast').textContent) && document.getElementById('toast').style.display !== 'none', re.source, { timeout: ms });
   const lastCall = m => calls.filter(c => c.method === m).pop();
@@ -375,6 +376,110 @@ try {
     const v = g.get('BACKEND_VERSION');
     await page.waitForFunction(t => document.getElementById('v-today').innerText.indexOf('後端版本 ' + t) >= 0, v, { timeout: 8000 });
     assert.ok(calls.filter(c => c.method === 'version').length > nVer, '要自動補問版本');
+  });
+
+  // ---------------- 記帳頁改版：一個畫面記完、可以復原 ----------------
+  const ledger = () => JSON.stringify([...g.book(2026).getSheetByName('2026年11月').cells].filter(([k]) => +k.split(',')[0] >= 16).sort());
+  await step('記帳頁：三種 iPhone 尺寸打開時，16 個數字鍵和「記一筆」都不用捲動就按得到；iPhone 15 以上連科目也看得到', async () => {
+    for (const vp of [{ width: 375, height: 667 }, { width: 390, height: 844 }, { width: 430, height: 932 }]) {
+      const c2 = await browser.newContext({ viewport: vp, deviceScaleFactor: 2 });
+      await c2.addInitScript(u => { try { if (!localStorage.getItem('kakeiboCfg')) localStorage.setItem('kakeiboCfg', JSON.stringify({ url: u, k: 'test-token' })); } catch (e) {} }, GAS_URL);
+      const p2 = await c2.newPage(); await p2.route('**/*', handler);
+      await p2.goto(BASE + '/index.html'); await p2.locator('#v-entry .submit').waitFor();
+      const m = await p2.evaluate(() => {
+        const nav = document.getElementById('nav').getBoundingClientRect().top, dock = document.querySelector('#v-entry .dock').getBoundingClientRect().top;
+        const inView = e => { const r = e.getBoundingClientRect(); return r.top >= 0 && r.bottom <= nav + 0.5; };
+        const above = e => { const r = e.getBoundingClientRect(); return r.top >= 0 && r.bottom <= dock + 0.5; };   // 上方的科目／項目不能被下方固定區蓋住
+        return { scrollTop: document.getElementById('v-entry').scrollTop, keys: [...document.querySelectorAll('#v-entry .keys button')].filter(inView).length,
+          submit: inView(document.querySelector('#v-entry .submit')), amount: inView(document.querySelector('#v-entry .amount')),
+          cats: [...document.querySelectorAll('#v-entry .cats button')].every(above), items: !!document.querySelector('#v-entry .items.wrap') && above(document.querySelector('#v-entry .items.wrap button')) };
+      });
+      await p2.screenshot({ path: join(OUT, '20-記帳頁-' + vp.width + '.png') });
+      await c2.close();
+      assert.equal(m.scrollTop, 0); assert.equal(m.keys, 16, vp.width + '：16 個數字鍵都要在畫面內'); assert.ok(m.submit, vp.width + '：記一筆要在畫面內'); assert.ok(m.amount, vp.width + '：金額要在畫面內');
+      if (vp.height >= 844) { assert.ok(m.cats, vp.width + '：科目要在畫面內'); assert.ok(m.items, vp.width + '：消費項目要在畫面內'); }
+    }
+  });
+
+  await step('記帳頁：輸入時金額一直看得到；⌫ 和 C 可用；摘要一行顯示、點了展開詳細且會記住', async () => {
+    await page.click('nav [data-view="entry"]');
+    await page.click('#v-entry [data-act="pay"][data-v="現金"]');
+    await page.click('#v-entry [data-act="cat"][data-v="食物"]');
+    for (const k of ['3', '4', '5']) await page.click('#v-entry .keys [data-act="key"][data-v="' + k + '"]');
+    await page.click('#v-entry .bsp');
+    assert.match(await page.locator('#v-entry .amount .v').innerText(), /^\$34$/);
+    await page.click('#v-entry .keys [data-v="C"]');
+    assert.match(await page.locator('#v-entry .amount .v').innerText(), /^\$0$/);
+    assert.match(await page.locator('#v-entry .bline').innerText(), /食物｜今天(還剩|超出) \$[\d,]+｜本月(剩|超支) \$/);
+    await page.click('#v-entry .bline');
+    assert.match(await page.locator('#v-entry .ndetail').innerText(), /今日額度/);
+    await page.reload(); await page.locator('#v-entry .ndetail').waitFor();
+    await page.click('#v-entry .bline');
+    assert.equal(await page.locator('#v-entry .ndetail').count(), 0);
+  });
+
+  await step('記帳頁：＋備註打開輸入框，備註會送出；消費項目不再橫向捲動被切掉', async () => {
+    await page.click('#v-entry [data-act="noteopen"]');
+    await page.fill('#note', '測試備註');
+    for (const k of ['5', '5']) await page.click('#v-entry .keys [data-v="' + k + '"]');
+    await page.click('#v-entry .submit');
+    await toastHas(/已記錄/);
+    assert.equal(lastCall('add').args.note, '測試備註');
+    const ov = await page.evaluate(() => { const x = document.querySelector('#v-entry .items.wrap'); return x.scrollWidth - x.clientWidth; });
+    assert.ok(ov <= 1, '消費項目不應該橫向溢出：' + ov);
+  });
+
+  await step('記完按「復原」：試算表回到記之前；一卡通連自動加值一起復原、餘額回到原本', async () => {
+    const before = ledger();
+    for (const k of ['7', '7']) await page.click('#v-entry .keys [data-v="' + k + '"]');
+    await page.click('#v-entry .submit');
+    await toastHas(/已記錄.*\$77/);
+    await shot('21-記完可復原');
+    await page.click('#toast .tact');
+    await toastHas(/已復原：/);
+    g.nextRequest(); assert.equal(ledger(), before, '復原後流水帳要回到原狀');
+    // 一卡通：餘額不夠，會自動加值
+    g.nextRequest(); const bal0 = g.call('ecardBalance_');
+    await page.click('#v-entry [data-act="pay"][data-v="一卡通"]');
+    for (const k of ['9', '0', '0']) await page.click('#v-entry .keys [data-v="' + k + '"]');
+    assert.match(await page.locator('#v-entry .bline').innerText(), /會自動加值 \$\d/);
+    await page.click('#v-entry .submit');
+    await toastHas(/已自動加值/);
+    await page.click('#toast .tact');
+    await toastHas(/已復原：.*（含一卡通自動加值 \d 筆）/);
+    g.nextRequest(); assert.equal(ledger(), before); assert.equal(g.call('ecardBalance_'), bal0);
+    await page.click('#v-entry [data-act="pay"][data-v="現金"]');
+  });
+
+  await step('預扣模式：項目清單很長時，數字鍵和「記一筆繳費」也不用捲動就按得到', async () => {
+    await page.click('#v-entry [data-act="pay"][data-v="預扣"]');
+    await page.locator('#v-entry .ppgrid').waitFor();
+    const m = await page.evaluate(() => {
+      const nav = document.getElementById('nav').getBoundingClientRect().top, inView = e => { const r = e.getBoundingClientRect(); return r.top >= 0 && r.bottom <= nav + 0.5; };
+      return { tall: document.getElementById('v-entry').scrollHeight > window.innerHeight, keys: [...document.querySelectorAll('#v-entry .keys button')].filter(inView).length, submit: inView(document.querySelector('#v-entry .submit')) };
+    });
+    assert.ok(m.tall, '預扣清單應該比畫面高（不然測不到）');
+    assert.equal(m.keys, 16); assert.ok(m.submit);
+    // 固定區要貼齊底部：和底部選單之間不能露出後面的內容
+    const gap = await page.evaluate(() => document.getElementById('nav').getBoundingClientRect().top - document.querySelector('#v-entry .dock').getBoundingClientRect().bottom);
+    assert.ok(Math.abs(gap) <= 1, '固定區和底部選單之間有 ' + gap + 'px 縫隙');
+    await shot('22-預扣模式');
+    await page.click('#v-entry [data-act="pay"][data-v="現金"]');
+  });
+
+  await step('離線暫存後按「復原」：從佇列拿掉，恢復連線後也不會上傳', async () => {
+    const before = ledger(), nAdd = calls.filter(c => c.method === 'add' && !c.offline).length;
+    offline = true;
+    for (const k of ['4', '4']) await page.click('#v-entry .keys [data-v="' + k + '"]');
+    await page.click('#v-entry .submit');
+    await toastHas(/目前離線，已暫存/);
+    await page.click('#toast .tact');
+    await toastHas(/已取消這筆暫存的記帳/);
+    assert.equal(await page.locator('#v-entry .qbar').count(), 0);
+    offline = false;
+    assert.equal(await page.evaluate(() => S.queue.length), 0);
+    assert.equal(calls.filter(c => c.method === 'add' && !c.offline).length, nAdd, '不能上傳');
+    assert.equal(ledger(), before);
   });
 
   await step('沒有任何對外連線、console 沒有錯誤', async () => {
