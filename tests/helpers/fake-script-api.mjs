@@ -6,6 +6,7 @@ export function fakeGoogle(o) {
     github: Object.assign({}, o.github),            // 路徑 → 內容（沒有就回 404）
     githubStatus: o.githubStatus || {},             // 路徑 → 強制回傳的 HTTP 狀態（API 與 raw 都適用）
     apiRateLimited: !!o.apiRateLimited,              // GitHub API 次數用完（403）
+    userSettingOff: !!o.userSettingOff,              // 使用者層級的 Apps Script API 開關沒開
     githubCalls: [],
     files: (o.files || []).map(f => Object.assign({ lastModifyUser: { email: 'owner' }, updateTime: '2026-11-20T00:00:00Z' }, f)),
     versions: (o.versions || [1, 2, 3]).map(n => ({ versionNumber: n })),
@@ -37,7 +38,8 @@ export function fakeGoogle(o) {
       }
       m = url.match(/^https:\/\/script\.googleapis\.com\/v1\/projects\/SID(\/.*)$/);
       if (!m) throw new Error('假網路：不允許連到 ' + url);
-      if (!state.apiEnabled) return resp(403, '{"error":{"message":"Apps Script API has not been used in project 123 before or it is disabled."}}');
+      if (!state.apiEnabled) return resp(403, '{"error":{"code":403,"message":"Apps Script API has not been used in project 123 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/script.googleapis.com/overview?project=123 then retry.","status":"PERMISSION_DENIED"}}');
+      if (state.userSettingOff) return resp(403, '{"error":{"code":403,"message":"User has not enabled the Apps Script API. Enable it by visiting https://script.google.com/home/usersettings then retry.","status":"PERMISSION_DENIED"}}');
       if (!/^Bearer TOKEN$/.test((opt.headers || {}).Authorization || '')) return resp(401, 'no auth');
       const path = m[1], body = opt.payload ? JSON.parse(opt.payload) : null;
       if (method !== 'get') writes.push({ method, path, body });

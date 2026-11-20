@@ -421,7 +421,7 @@ function selfUpdateRig(o) {
   const g = loadGas({ props: Object.assign({ TOKEN: 't' }, o.props || {}) });
   const f = fakeGoogle({
     github: Object.assign({ 'Code_單一檔案版.gs': o.github, 'appsscript.json': o.manifest || REPO_MAN }, o.githubExtra || {}),
-    githubStatus: o.githubStatus, apiEnabled: o.apiEnabled, deployments: o.deployments, apiRateLimited: o.apiRateLimited,
+    githubStatus: o.githubStatus, apiEnabled: o.apiEnabled, deployments: o.deployments, apiRateLimited: o.apiRateLimited, userSettingOff: o.userSettingOff,
     files: [{ name: 'appsscript', type: 'JSON', source: o.headManifest || REPO_MAN }, { name: '程式碼', type: 'SERVER_JS', source: o.head }, { name: 'Index', type: 'HTML', source: INDEX_SRC }]
   });
   if (o.depDesc !== undefined) f.deployed().deploymentConfig.description = o.depDesc;
@@ -495,7 +495,8 @@ test('自我更新：抓到壞掉或不完整的檔案時完全不寫入', () =>
     ['設定檔不是 JSON', { github: gh, manifest: '{ oops' }, /不是正確的 JSON/],
     ['設定檔少了部署權限', { github: gh, manifest: JSON.stringify(Object.assign({}, man, { oauthScopes: man.oauthScopes.filter(x => !/deployments/.test(x)) })) }, /缺少授權範圍/],
     ['設定檔少了 webapp', { github: gh, manifest: JSON.stringify(Object.assign({}, man, { webapp: undefined })) }, /webapp/],
-    ['Apps Script API 沒開', { github: gh, apiEnabled: false }, /usersettings/]
+    ['Cloud 專案沒啟用 API（要看到 Google 原文與專案號碼）', { github: gh, apiEnabled: false }, /標準 Cloud 專案[\s\S]*has not been used in project 123/],
+    ['使用者開關沒開', { github: gh, userSettingOff: true }, /usersettings[\s\S]*User has not enabled/]
   ];
   for (const [name, o, re] of cases) {
     const { g, f } = selfUpdateRig(Object.assign({ head }, o));

@@ -28,7 +28,7 @@ const CONFIG = {
 
 // 後端版本：每次修改這個檔案都要更新（tools/check.mjs 會檢查）。
 // 前端 index.html 的 NEED_BACKEND 若比這個新，App 會提醒「後端還沒部署新版本」。
-const BACKEND_VERSION = '2026.11.20-1200';
+const BACKEND_VERSION = '2026.11.21-1100';
 
 // 各年度檔案的差異（儲存格位置）
 const PROFILE = {
@@ -1829,8 +1829,12 @@ function scriptApi_(method, path, body) {
   const r = UrlFetchApp.fetch('https://script.googleapis.com/v1/projects/' + ScriptApp.getScriptId() + path, opt);
   const code = r.getResponseCode(), text = r.getContentText();
   if (code >= 300) {
-    if (code === 403 && /Apps Script API|has not been used|disabled/i.test(text)) throw new Error('Google Apps Script API 還沒開啟：請到 https://script.google.com/home/usersettings 開啟後再試一次');
-    throw new Error('Apps Script API 錯誤（HTTP ' + code + '）：' + text.slice(0, 200));
+    // 保留 Google 的原始訊息（曾把兩種不同原因都改寫成「去 usersettings 開啟」，誤導使用者）
+    let msg = text; try { msg = JSON.parse(text).error.message || text; } catch (e) {}
+    let hint = '';
+    if (code === 403 && /has not been used in project|SERVICE_DISABLED/i.test(text)) hint = '（這個 Apps Script 專案所屬的 Google Cloud 專案沒有啟用 Apps Script API。預設的 Cloud 專案無法啟用，需要改連到自己建立的標準 Cloud 專案並在那裡啟用。）';
+    else if (code === 403 && /User has not enabled the Apps Script API/i.test(text)) hint = '（請到 https://script.google.com/home/usersettings 開啟「Google Apps Script API」，開啟後等幾分鐘再試。）';
+    throw new Error('Apps Script API 錯誤（HTTP ' + code + '）' + hint + '：' + String(msg).slice(0, 300));
   }
   return text ? JSON.parse(text) : {};
 }
