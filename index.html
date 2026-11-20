@@ -202,6 +202,7 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
     <section class="view" id="v-assets"></section>
     <section class="view" id="v-plan"></section>
     <section class="view" id="v-env"></section>
+    <section class="view" id="v-subs"></section>
   </main>
   <aside class="view entry" id="v-entry"></aside>
 </div>
@@ -209,9 +210,9 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.20-1200';
+const APP_VERSION = '2026.11.21-1500';
 // 這個前端需要的最低後端版本（Code_單一檔案版.gs 的 BACKEND_VERSION）。前端用到後端新功能時要跟著調高。
-const NEED_BACKEND = '2026.11.20-1200';
+const NEED_BACKEND = '2026.11.21-1500';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -221,8 +222,22 @@ const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, c
 function call(method, args) {
   if (!CFG) return Promise.reject(new Error('尚未設定連線'));
   return fetch(CFG.url, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ k: CFG.k, method: method, args: args || {} }), redirect: 'follow' })
-    .then(function (r) { if (!r.ok) throw new Error('連線失敗（' + r.status + '）'); return r.json(); })
-    .then(function (j) { if (!j.ok) throw new Error(j.error || '發生錯誤'); return j.data; });
+    .then(function (r) { if (!r.ok) throw new Error('連線失敗（' + r.status + '）'); return r.text(); })
+    .then(function (t) {
+      let j;
+      // 回應不是 JSON：通常是 Google 在執行程式前就擋下（正在部署新版本、需要重新授權等），附上原文方便判斷
+      try { j = JSON.parse(t); } catch (e) { throw new Error('後端回應的不是資料（可能正在部署新版本或需要重新授權），請稍後再試｜原文：' + String(t).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80)); }
+      if (!j.ok) throw new Error(j.error || '發生錯誤');
+      askBackendLater(method);
+      return j.data;
+    });
+}
+// 開啟時沒問到後端版本（例如第一個請求失敗），之後只要有請求成功就自動補問一次
+function askBackendLater(method) {
+  if (method === 'version' || S.backend !== undefined || S.verAsking) return;
+  S.verAsking = true;
+  call('version', {}).then(function (v) { checkBackend(v.backend); if (S.view === 'today' && S.dash) renderToday(); })
+    .catch(function () {}).then(function () { S.verAsking = false; });
 }
 function openSetup(msg) {
   openModal('<b style="font-size:17px">連線設定</b>' +
@@ -422,7 +437,7 @@ function show(view) {
   document.querySelectorAll('.view').forEach(function (v) { v.classList.remove('active'); });
   const target = view === 'cat' ? 'v-cat' : 'v-' + view;
   $(target).classList.add('active');
-  document.querySelectorAll('.navbtn').forEach(function (b) { b.classList.toggle('on', b.dataset.view === (view === 'cat' ? 'charts' : ((view === 'plan' || view === 'env') ? 'assets' : view))); });
+  document.querySelectorAll('.navbtn').forEach(function (b) { b.classList.toggle('on', b.dataset.view === (view === 'cat' ? 'charts' : ((view === 'plan' || view === 'env' || view === 'subs') ? 'assets' : view))); });
   document.getElementById('app').classList.toggle('entry-mode', view === 'entry');
   resetScroll();
   if (view === 'today') loadToday();
@@ -749,7 +764,7 @@ function renderToday() {
   h += '<div class="card wide-only"><b style="font-size:15px">各科目快覽</b><div class="grid2" style="margin-top:10px">' + d.cats.filter(function (c) { return c.budget > 0; }).map(function (c) {
     const p = PACE[c.pace]; return '<div class="col"><div class="row" style="font-size:13px"><span>' + esc(c.name) + '</span><b class="' + p[1] + '">' + pct(c.total, c.budget) + '%</b></div>' + bar(c.cash, c.card, c.budget) + '</div>';
   }).join('') + '</div></div>';
-  h += '<div style="text-align:center;margin:4px 0 12px"><button class="chip" data-act="cfg" style="height:36px;font-size:13px;color:var(--sub)">連線設定</button><div class="sub" style="font-size:11px;margin-top:6px">前端版本 ' + APP_VERSION + '｜後端版本 ' + esc(S.backend || '未知（舊版）') + '</div></div>';
+  h += '<div style="text-align:center;margin:4px 0 12px"><button class="chip" data-act="cfg" style="height:36px;font-size:13px;color:var(--sub)">連線設定</button><div class="sub" style="font-size:11px;margin-top:6px">前端版本 ' + APP_VERSION + '｜後端版本 ' + esc(S.backend === undefined ? '尚未取得（連上後會自動補上）' : (S.backend || '舊版（沒有版本號）')) + '</div></div>';
   el.innerHTML = h;
 }
 $('v-today').addEventListener('click', function (e) {
@@ -1496,7 +1511,8 @@ function renderAssets() {
   let h = monthHeader(d, 'as', '滿月記帳｜月底盤點') +
     '<div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-bottom:12px"><button class="chip" data-act="closewiz" style="width:100%;height:42px;border:1px solid var(--green);color:var(--green);font-weight:700">' + d.m + ' 月月底結帳</button>' +
     '<button class="chip" data-act="plan" style="width:100%;height:42px;border:1px solid var(--blue);color:var(--blue);font-weight:700">明年預算試算</button></div>' +
-    '<button class="chip" data-act="env" style="width:100%;height:42px;margin:-4px 0 12px;border:1px solid var(--green);color:var(--green);font-weight:700">預扣信封｜各項目水位與調用</button>';
+    '<button class="chip" data-act="env" style="width:100%;height:42px;margin:-4px 0 12px;border:1px solid var(--green);color:var(--green);font-weight:700">預扣信封｜各項目水位與調用</button>' +
+    '<button class="chip" data-act="subs" style="width:100%;height:42px;margin:-4px 0 12px;border:1px solid var(--cardC);color:var(--cardInk);font-weight:700">固定訂閱｜聯邦卡每月固定扣款</button>';
   h += '<div class="grid2" style="align-items:start"><div><div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)">' +
     '<div class="card"><span class="sub">本月資產總計</span><div class="mid">$' + fmt(c.total) + '</div><span style="font-size:12px;font-weight:500" class="' + (c.missing ? 'fast' : 'ok') + '">' + (c.missing ? '還有 ' + c.missing + ' 項未填' : '已填完整') + '</span></div>' +
     '<div class="card ' + (c.missing ? '' : (c.diff >= 0 ? 'okbg' : 'overbg')) + '"><span class="sub">本月資產增減</span><div class="mid ' + (c.missing ? 'done' : (c.diff >= 0 ? 'ok' : 'over')) + '">' + (c.missing ? '—' : (c.diff >= 0 ? '+' : '') + money(c.diff)) + '</div><span class="sub" style="font-size:12px">' + (c.missing ? '填完才計算' : '上月 $' + fmt(d.prevTotal)) + '</span></div></div>' +
@@ -1535,6 +1551,7 @@ $('v-assets').addEventListener('click', function (e) {
   if (a === 'closewiz') return openClose(S.asset.y, S.asset.m);
   if (a === 'plan') return openPlan();
   if (a === 'env') return openEnv(todayYM());
+  if (a === 'subs') return openSubs(todayYM());
   if (a === 'at') { S.act = +b.dataset.v; return renderAssetPane(); }
   if (a === 'taxy') { S.taxYear = +b.dataset.v; return renderGoalsTax(S.asset.y, S.asset.m); }
   if (a === 'savemonthly') {
@@ -1610,6 +1627,7 @@ function renderBill(b) {
   $('modalBox').innerHTML = '<div class="row"><button class="iconbtn" data-b="prev" aria-label="上一期">' + ICON.left + '</button><b style="font-size:16px">' + b.y + '年' + b.m + '月6日帳單</b><button class="iconbtn" data-b="next" aria-label="下一期">' + ICON.right + '</button></div>' +
     '<div class="sub" style="font-size:12px;text-align:center">消費期間 ' + md(b.from) + '～' + md(b.to) + '</div>' +
     '<div class="card" style="background:var(--bg);margin:0"><div class="row"><span>App 記錄的刷卡</span><b>$' + fmt(b.recorded) + '</b></div>' + (b.fixed ? '<div class="sub" style="font-size:12px">含固定訂閱／分期 $' + fmt(b.fixed) + '</div>' : '') +
+    (b.subs && b.subs.length ? '<div class="sub" style="font-size:12px;line-height:1.6">本期固定訂閱：' + b.subs.map(function (x) { return esc(x.name) + ' $' + fmt(x.amount); }).join('、') + '</div>' : '') +
     '<div class="row" style="margin-top:8px"><span>本期應繳金額<br><span class="sub" style="font-size:11px">（帳單上的總額，你輸入的）</span></span><input class="f" id="billAmt" inputmode="numeric" style="width:140px;text-align:right" value="' + (b.bill == null ? '' : b.bill) + '" placeholder="例如 21345"></div>' +
     (b.detailTotal != null ? '<div class="sub" style="font-size:12px;margin-top:4px">上次貼上的明細合計 $' + fmt(b.detailTotal) + '（只用來逐筆比對，不會取代上面的應繳金額）</div>' : '') +
     (diffTxt ? '<div style="margin-top:8px;font-size:14px">' + diffTxt + '</div>' : '') + '</div>' +
@@ -2049,6 +2067,101 @@ function openBorrow(key) {
   };
 }
 
+// ---------- 固定訂閱（直接讀寫試算表「卡費」表）----------
+function openSubs(ym) {
+  S.subsYM = ym || S.subsYM || todayYM();
+  show('subs');
+  const el = $('v-subs');
+  if (!S.subs) el.innerHTML = '<div class="loading">讀取卡費表…</div>'; else el.classList.add('dim');
+  call('subs', S.subsYM).then(function (d) { el.classList.remove('dim'); S.subs = d; renderSubs(); })
+    .catch(function (e) { el.classList.remove('dim'); S.subs = null; el.innerHTML = '<button class="chip" data-sb="back" style="border:none;background:none;padding:0;color:var(--blue)">‹ 資產</button>' + monthHeader(S.subsYM, 'sb', '固定訂閱') + '<div class="loading">' + esc(e && e.message ? e.message : e) + '</div>'; });
+}
+function subNext(r, m) {   // 本期之後第一個金額不同的月份
+  for (let k = m; k < 12; k++) if (r.values[k] !== r.values[m - 1]) return { m: k + 1, v: r.values[k] };
+  return null;
+}
+function renderSubs() {
+  const d = S.subs, el = $('v-subs'), m = d.m, total = d.totals[m - 1];
+  let h = '<button class="chip" data-sb="back" style="border:none;background:none;padding:0;color:var(--blue)">‹ 資產</button>' + monthHeader(d, 'sb', '固定訂閱｜' + d.m + ' 月 6 日帳單');
+  h += '<div class="card"><div class="row"><span class="sub">本期固定訂閱合計</span><b style="font-size:22px">$' + fmt(total) + '</b></div>' +
+    (m > 1 ? '<div class="sub" style="font-size:12px;margin-top:2px">上一期 $' + fmt(d.totals[m - 2]) + (total !== d.totals[m - 2] ? '（' + (total > d.totals[m - 2] ? '多' : '少') + ' $' + fmt(Math.abs(total - d.totals[m - 2])) + '）' : '') + '</div>' : '') +
+    '<div class="sub" style="font-size:12px;margin-top:2px">全年合計 $' + fmt(d.totals.reduce(function (a, b) { return a + b; }, 0)) + '｜資料來源：' + d.y + ' 年試算表「卡費」表</div></div>';
+  if (d.canUndo) h += '<div class="qbar"><span>最近一次變更：' + esc(d.canUndo.text) + '</span><button class="chip" data-sb="undo" style="height:32px">復原</button></div>';
+  const on = d.rows.filter(function (r) { return r.values[m - 1]; }), off = d.rows.filter(function (r) { return !r.values[m - 1]; });
+  const row = function (r) {
+    const nx = subNext(r, m), first = r.values.findIndex(function (x) { return x; });
+    const note = nx ? (nx.v ? nx.m + ' 月起 $' + fmt(nx.v) : nx.m + ' 月起停止') : (r.values[m - 1] ? '今年持續' : (first >= 0 ? '本期不扣' : '今年沒有扣款'));
+    return '<button class="li" data-sb="edit" data-n="' + esc(r.name) + '" style="width:100%;border-left:none;border-right:none;border-top:none;background:var(--card);text-align:left">' +
+      '<div class="col" style="flex:1;gap:1px;min-width:0"><span style="font-size:15px;font-weight:500">' + esc(r.name) + (r.installment ? ' <span class="tag" style="background:var(--chip);color:var(--sub);font-size:11px;padding:2px 8px">分期</span>' : '') + '</span>' +
+      '<span class="sub" style="font-size:12px">' + note + '｜全年 $' + fmt(r.values.reduce(function (a, b) { return a + b; }, 0)) + '</span></div>' +
+      '<span class="amt-k">' + (r.values[m - 1] ? '$' + fmt(r.values[m - 1]) : '—') + '</span></button>';
+  };
+  h += '<div class="list">' + (on.length ? on.map(row).join('') : '<div class="li sub">本期沒有固定訂閱</div>') + '</div>';
+  if (off.length) h += '<details style="margin-bottom:12px"><summary class="sub" style="font-size:13px;cursor:pointer">本期沒有扣款的（' + off.length + ' 項）</summary><div class="list" style="margin-top:8px">' + off.map(row).join('') + '</div></details>';
+  h += d.minFrom > 12 ? '<div class="sub" style="font-size:13px;text-align:center;margin:8px 0">' + d.y + ' 年的帳單都已扣款，請切到下一年修改。</div>'
+    : '<button class="submit" data-sb="add" style="background:var(--cardC);color:var(--cardOn)">＋ 新增訂閱</button><div class="sub" style="font-size:11px;text-align:center;margin-top:6px">最早可以從 ' + d.minFrom + ' 月 6 日帳單起修改；之前的帳單已經扣款，不會更動。</div>';
+  el.innerHTML = h;
+}
+function openSubEdit(name) {
+  const d = S.subs, r = name ? d.rows.filter(function (x) { return x.name === name; })[0] : null;
+  if (d.minFrom > 12) return toast(d.y + ' 年的帳單都已扣款，請切到下一年修改');
+  const from0 = Math.max(d.minFrom, Math.min(12, d.m));
+  const months = []; for (let k = d.minFrom; k <= 12; k++) months.push(k);
+  const draw = function (msg) {
+    $('modalBox').innerHTML = '<b style="font-size:16px">' + (r ? esc(r.name) : '新增固定訂閱') + '｜' + d.y + ' 年</b>' +
+      (r ? '<div class="sub" style="font-size:12px;line-height:1.6">目前每月：' + r.values.map(function (v, i) { return (i + 1) + '月 ' + (v ? '$' + fmt(v) : '—'); }).join('、') + '</div>'
+         : '<label class="sub">名稱<input class="f" id="sbName" placeholder="例如：Claude"></label>') +
+      '<label class="sub">每期金額<input class="f" id="sbAmt" inputmode="numeric" placeholder="例如 690" value="' + (r && r.values[from0 - 1] ? r.values[from0 - 1] : '') + '"></label>' +
+      '<label class="sub">從哪一期帳單起<select class="f" id="sbFrom">' + months.map(function (k) { return '<option value="' + k + '"' + (k === from0 ? ' selected' : '') + '>' + k + ' 月 6 日帳單起</option>'; }).join('') + '</select></label>' +
+      (d.hasNext ? '<label class="row" style="justify-content:flex-start;gap:8px;font-size:14px"><input type="checkbox" id="sbNext" checked style="width:20px;height:20px">也套用到 ' + (d.y + 1) + ' 年整年</label>' : '') +
+      (msg ? '<div class="over" style="font-size:13px">' + esc(msg) + '</div>' : '') +
+      '<div class="sub" style="font-size:12px;line-height:1.5">會直接修改試算表「卡費」表，' + (r ? '只改選定月份以後的格子。' : '在訂閱區新增一列。') + '改錯了可以在清單上方按「復原」。</div>' +
+      '<div class="grid2" style="grid-template-columns:' + (r ? 'repeat(3,minmax(0,1fr))' : 'minmax(0,1fr) minmax(0,1fr)') + ';gap:8px">' +
+      '<button class="submit" style="background:var(--card);color:var(--ink);border:1px solid var(--line2);margin:0" data-se="cancel">取消</button>' +
+      (r ? '<button class="submit" style="background:var(--card);color:var(--red);border:1px solid var(--red);margin:0" data-se="stop">停用</button>' : '') +
+      '<button class="submit" style="margin:0;background:var(--cardC);color:var(--cardOn)" data-se="save">儲存</button></div>';
+  };
+  openModal(''); draw();
+  $('modalBox').onclick = function (e) {
+    const b = e.target.closest('[data-se]'); if (!b) return;
+    if (b.dataset.se === 'cancel') return closeModal();
+    const from = +$('sbFrom').value, alsoNext = !!($('sbNext') && $('sbNext').checked);
+    const args = { y: d.y, from: from, alsoNext: alsoNext, rid: newRid() };
+    if (b.dataset.se === 'stop') {
+      if (!confirm('從 ' + from + ' 月 6 日帳單起停用「' + r.name + '」' + (alsoNext ? '（含 ' + (d.y + 1) + ' 年）' : '') + '？')) return;
+      Object.assign(args, { action: 'stop', name: r.name });
+    } else {
+      const amt = Math.round(evalExpr($('sbAmt').value)), nm = r ? r.name : $('sbName').value.trim();
+      if (!nm) return draw('請輸入名稱');
+      if (isNaN(amt) || amt <= 0) return draw('請輸入每期金額');
+      Object.assign(args, { action: r ? 'set' : 'add', name: nm, amount: amt });
+    }
+    b.disabled = true; b.textContent = '儲存中…';
+    call('saveSub', args).then(function (res) {
+      closeModal(); clearCaches(); S.dashStale = true;
+      if (res.duplicate) { toast(res.message); return openSubs(); }
+      S.subs = res; S.subsYM = { y: res.y, m: res.m }; renderSubs(); toast(res.message, 3200);
+    }).catch(function (er) { b.disabled = false; b.textContent = b.dataset.se === 'stop' ? '停用' : '儲存'; draw(String(er && er.message ? er.message : er)); });
+  };
+}
+$('v-subs').addEventListener('click', function (e) {
+  const b = e.target.closest('[data-sb],[data-act]'); if (!b) return;
+  const k = b.dataset.sb || b.dataset.act;
+  if (k === 'back') return show('assets');
+  if (k === 'sb-prev' || k === 'sb-next') return openSubs(ymAdd(S.subsYM, k === 'sb-prev' ? -1 : 1));
+  if (k === 'add') return openSubEdit(null);
+  if (k === 'edit') return openSubEdit(b.dataset.n);
+  if (k === 'undo') {
+    const u = S.subs.canUndo; if (!confirm('復原「' + u.text + '」？')) return;
+    b.disabled = true;
+    call('undoSub', { y: u.y, row: u.row, rid: newRid() }).then(function (res) {
+      clearCaches(); S.dashStale = true;
+      if (res.duplicate) { toast(res.message); return openSubs(); }
+      toast(res.message); openSubs();
+    }).catch(function (er) { b.disabled = false; err(er); });
+  }
+});
+
 // ---------- 視窗 ----------
 function openModal(html) { $('modalBox').innerHTML = html; $('modal').style.display = 'flex'; }
 function closeModal() { $('modal').style.display = 'none'; $('modalBox').onclick = null; }
@@ -2105,15 +2218,23 @@ else (function boot() {
   const last = lsGet('kakeiboLast');
   const applyForm = function (f) { S.form = f; if (!S.e.date || S.e.date < f.today) S.e.date = f.today; if (!S.e.item) S.e.item = (f.items[S.e.cat] || [])[0] || S.e.cat; };
   if (last && last.form && last.dash) { S.offline = true; applyForm(last.form); S.e.date = last.form.today; S.dash = last.dash; renderEntry(); show(startView); }
-  call('init', {}).then(function (r) {
-    checkBackend(r.backend);
-    S.offline = false; applyForm(r.form); S.e.date = r.form.today; S.dash = r.dashboard; S.dashStale = false;
-    lsSet('kakeiboLast', { form: r.form, dash: r.dashboard });
-    renderEntry();
-    if (!last) show(startView); else if (S.view === 'today' || window.innerWidth >= 1000) renderToday();
-    setTimeout(prefetch, 300);
-    if (S.queue && S.queue.length) setTimeout(function () { flushQueue(false); }, 800);
-  }).catch(err);
+  // 開啟時的第一個請求失敗（例如後端正在切換部署）就隔幾秒自動重試，最多 2 次；
+  // 不然畫面會一直停在上次的暫存資料，也問不到後端版本
+  const load = function (attempt) {
+    call('init', {}).then(function (r) {
+      checkBackend(r.backend);
+      S.offline = false; applyForm(r.form); S.e.date = r.form.today; S.dash = r.dashboard; S.dashStale = false;
+      lsSet('kakeiboLast', { form: r.form, dash: r.dashboard });
+      renderEntry();
+      if (!last) show(startView); else if (S.view === 'today' || window.innerWidth >= 1000) renderToday();
+      setTimeout(prefetch, 300);
+      if (S.queue && S.queue.length) setTimeout(function () { flushQueue(false); }, 800);
+    }).catch(function (e) {
+      err(e);
+      if (attempt < 2) setTimeout(function () { load(attempt + 1); }, 4000);
+    });
+  };
+  load(0);
 })();
 </script>
 </body>

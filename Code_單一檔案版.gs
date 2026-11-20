@@ -28,7 +28,7 @@ const CONFIG = {
 
 // 後端版本：每次修改這個檔案都要更新（tools/check.mjs 會檢查）。
 // 前端 index.html 的 NEED_BACKEND 若比這個新，App 會提醒「後端還沒部署新版本」。
-const BACKEND_VERSION = '2026.11.21-1100';
+const BACKEND_VERSION = '2026.11.21-1500';
 
 // 各年度檔案的差異（儲存格位置）
 const PROFILE = {
@@ -177,7 +177,7 @@ function api(k, method, args) {
 // ---- 防止重送重複記帳：前端每筆記帳／繳費都帶一個請求編號 rid ----
 // 情境：試算表已經寫入，但手機沒收到回應（逾時），App 放進離線佇列再送一次。
 // 同一個 rid 第二次送來時直接略過，不再寫入。最近 200 個 rid 存在 Script Properties。
-const RID_METHODS = { add: true, payPrepaid: true };
+const RID_METHODS = { add: true, payPrepaid: true, saveSub: true, undoSub: true };
 const RID_KEEP = 200;
 function ridMap_() { try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('RIDS') || '{}'); } catch (e) { return {}; } }
 function ridSave_(map) {
@@ -209,6 +209,9 @@ function route_(method, args) {
     case 'refresh': bumpVer_(); return { form: getFormData_(), dashboard: getDashboard_(todayStr_()), backend: BACKEND_VERSION };
     case 'version': return { backend: BACKEND_VERSION };
     case 'selfUpdate': return selfUpdate_({});
+    case 'subs': return getSubs_(+args.y, +args.m);
+    case 'saveSub': return saveSub_(args);
+    case 'undoSub': return undoSub_(args);
     case 'add': return addEntry_(args);
     case 'update': return updateEntry_(args);
     case 'delete': return deleteEntry_(args);
@@ -617,6 +620,8 @@ function getDashboard_(todayS) {
   if (t.d <= 6) {
     const due = PROFILE[t.y] && PROFILE[t.y].cardDue.type === 'sheet' ? num_(rowValue_(t.y, PROFILE[t.y].cardDue, t.m)) : top.cardBillCell;
     if (due) tips.push({ level: 'info', text: (t.d === 6 ? '今天' : '6 號') + '扣卡費 $' + fmt_(due) + '，請確認待繳戶餘額足夠。' });
+    const sc = safe_(function () { return subChanges_(t.y, t.m); }) || [];
+    if (sc.length) tips.push({ level: 'info', text: '本期卡費的固定訂閱有變動：' + sc.map(function (c) { return c.text; }).join('、') + '。' });
   }
   // 5 今天還沒記帳 / 月底盤點
   const hour = +Utilities.formatDate(new Date(), CONFIG.timezone, 'H');
@@ -1068,7 +1073,7 @@ function readLog_(y) {
     const s = ss_(y), sh = s.getSheetByName('App紀錄');
     if (!sh || sh.getLastRow() < 2) return [];
     return sh.getRange(2, 1, sh.getLastRow() - 1, LOG_HEAD.length).getValues().map(function (r, i) {
-      return { row: i + 2, type: String(r[1] || ''), date: dateText_(r[2]), m: num_(r[3]), name: String(r[4] || ''), amount: num_(r[5]),
+      return { row: i + 2, at: r[0] instanceof Date ? r[0].getTime() : 0, type: String(r[1] || ''), date: dateText_(r[2]), m: num_(r[3]), name: String(r[4] || ''), amount: num_(r[5]),
                acct: String(r[6] || ''), target: String(r[7] || ''), planned: r[8] === '' ? null : num_(r[8]), note: String(r[9] || ''), data: String(r[10] || '') };
     }).filter(function (r) { return r.type; });
   });
@@ -1217,7 +1222,8 @@ function getBill_(y, m) {
   const logs = readLog_(y).filter(function (r) { return r.type === '帳單' && r.m === m; });
   const bill = logs.filter(function (r) { return !r.data; }).pop() || null;      // 你輸入的帳單金額
   const detail = logs.filter(function (r) { return r.data; }).pop();            // 最後一次貼上的明細
-  return { y: y, m: m, from: p2.y + '-' + String(p2.m).padStart(2, '0') + '-23', to: p1.y + '-' + String(p1.m).padStart(2, '0') + '-22',
+  const subs = safe_(function () { return subsForBill_(y, m); }) || [];
+  return { y: y, m: m, subs: subs, from: p2.y + '-' + String(p2.m).padStart(2, '0') + '-23', to: p1.y + '-' + String(p1.m).padStart(2, '0') + '-22',
            rows: rows, fixed: fixed, detail: detail ? safe_(function () { return JSON.parse(detail.data); }) : null, detailTotal: detail ? detail.amount : null, recorded: recorded, bill: bill ? bill.amount : null, billRow: bill ? bill.row : null, diff: bill ? bill.amount - recorded : null };
 }
 // 對帳找差異：在帳單期間前後 3 天，找金額相同、或算式裡含這個數字的紀錄
@@ -1900,7 +1906,7 @@ function selfUpdate_(opt) {
     const prev = dep.deploymentConfig.versionNumber;
     scriptApi_('put', '/deployments/' + dep.deploymentId, { deploymentConfig: { scriptId: ScriptApp.getScriptId(), versionNumber: ver.versionNumber, manifestFileName: SELF_UPDATE.manifestName, description: 'GitHub ' + newV } });
     logSelfUpdate_({ at: Utilities.formatDate(new Date(), CONFIG.timezone, 'yyyy-MM-dd HH:mm'), from: depV || headV, to: newV, version: ver.versionNumber, prevVersion: prev });
-    return { ok: true, updated: true, version: newV, versionNumber: ver.versionNumber, message: '已從 ' + (depV || headV || '舊版') + ' 更新到 ' + newV + '（部署版本 ' + ver.versionNumber + '，網址不變）' };
+    return { ok: true, updated: true, version: newV, versionNumber: ver.versionNumber, message: ((depV || headV) && (depV || headV) !== newV ? '已從 ' + (depV || headV) + ' 更新到 ' + newV : '已部署 ' + newV) + '（部署版本 ' + ver.versionNumber + '，網址不變）' };
   } finally { lock.releaseLock(); }
 }
 // 把網頁部署指回上一個版本（緊急用；不會改動專案裡的程式）
@@ -1913,6 +1919,156 @@ function rollbackDeploy_() {
   scriptApi_('put', '/deployments/' + dep.deploymentId, { deploymentConfig: { scriptId: ScriptApp.getScriptId(), versionNumber: prev, manifestFileName: SELF_UPDATE.manifestName, description: '退回版本 ' + prev } });
   logSelfUpdate_({ at: Utilities.formatDate(new Date(), CONFIG.timezone, 'yyyy-MM-dd HH:mm'), rollback: true, version: prev, prevVersion: cur });
   return { ok: true, version: prev, message: '已把部署從版本 ' + cur + ' 退回版本 ' + prev };
+}
+
+// ===== 23. 固定訂閱（直接讀寫「卡費」表的訂閱區）=====
+// 卡費表的欄是「帳單月份」（幾月 6 日繳），每一列是一個訂閱。訂閱區用 A 欄標題定位，不寫死列號。
+// 每次修改都記在 App紀錄（類型「訂閱」）並保存改動前每一格的狀態；只能復原「最近一次」的修改，避免順序錯亂。
+// 已經扣款的帳單月份屬於歷史紀錄，不能修改（minFrom_）。
+const SUBS = {
+  2026: { sheet: '卡費', after: '月份', before: '非固定消費', firstCol: 2, tree: false },
+  2027: { sheet: '卡費', after: '① 聯邦固定數位訂閱小計', before: '【自動連動', firstCol: 2, tree: true }
+};
+function subName_(a) { return String(a || '').replace(/^[\s├└─│]+/, '').trim(); }
+// 找訂閱區：after 標題的下一列到 before 標題的上一列
+function subBlock_(y) {
+  const spec = SUBS[y];
+  if (!spec || !ss_(y)) throw new Error(y + ' 年沒有固定訂閱（卡費表）設定');
+  const sh = ss_(y).getSheetByName(spec.sheet);
+  if (!sh) throw new Error(y + ' 年找不到「' + spec.sheet + '」表');
+  const a = sh.getRange(1, 1, 120, 1).getValues().map(function (r) { return String(r[0] || '').trim(); });
+  let first = -1, last = -1;
+  for (let i = 0; i < a.length; i++) {
+    if (first < 0) { if (a[i].indexOf(spec.after) === 0) first = i + 2; }
+    else if (a[i].indexOf(spec.before) === 0) { last = i; break; }
+  }
+  if (first < 0 || last < first) throw new Error(y + ' 年「' + spec.sheet + '」表找不到訂閱區（「' + spec.after + '」到「' + spec.before + '」之間），請確認標題沒有改名');
+  return { sh: sh, spec: spec, first: first, last: last };
+}
+function readSubs_(y) {
+  const b = subBlock_(y), n = b.last - b.first + 1;
+  const v = b.sh.getRange(b.first, 1, n, b.spec.firstCol + 11).getValues();
+  return v.map(function (r, i) {
+    const name = subName_(r[0]), values = [];
+    for (let k = 0; k < 12; k++) { const x = r[b.spec.firstCol - 1 + k]; values.push(x instanceof Date ? 0 : num_(x)); }
+    return { row: b.first + i, name: name, values: values, installment: /分期/.test(name) };
+  }).filter(function (x) { return x.name; });
+}
+// 最早可以修改的帳單月份：今年 6 日以後，本月帳單已扣款；過去年度全部不能改；未來年度從 1 月起
+function minFrom_(y) {
+  const t = parseDate_(todayStr_());
+  if (y > t.y) return 1;
+  if (y < t.y) return 13;
+  return t.d > 6 ? t.m + 1 : t.m;
+}
+// 最近一次的訂閱修改（可能在不同年度的 App紀錄）：依寫入時給的遞增序號判斷，不用時間（同一毫秒會分不出先後）
+function subSeqOf_(l) { try { return num_(JSON.parse(l.data || '{}').seq); } catch (e) { return 0; } }
+function lastSubLog_() {
+  let best = null;
+  Object.keys(CONFIG.files).forEach(function (yy) {
+    safe_(function () { readLog_(+yy).forEach(function (l) {
+      if (l.type !== '訂閱') return;
+      const q = subSeqOf_(l);
+      if (!best || q > best.seq || (q === best.seq && l.at > best.at)) best = Object.assign({ y: +yy, seq: q }, l);
+    }); });
+  });
+  return best;
+}
+function getSubs_(y, m) {
+  y = +y; m = +m || parseDate_(todayStr_()).m;
+  const rows = readSubs_(y), totals = [];
+  for (let k = 0; k < 12; k++) totals.push(rows.reduce(function (s, r) { return s + r.values[k]; }, 0));
+  const u = lastSubLog_();
+  return { y: y, m: m, rows: rows, totals: totals, minFrom: minFrom_(y), hasNext: !!(SUBS[y + 1] && ss_(y + 1)),
+           canUndo: u ? { y: u.y, row: u.row, text: (u.target === 'add' ? '新增' : u.target === 'stop' ? '停用' : '修改') + '「' + u.name + '」' + (u.target === 'stop' ? '' : ' $' + fmt_(u.amount)) + '（' + u.y + ' 年 ' + u.m + ' 月帳單起' + (u.note ? '，' + u.note : '') + '）' } : null };
+}
+function subsForBill_(y, m) {
+  return readSubs_(y).filter(function (r) { return r.values[m - 1]; }).map(function (r) { return { name: r.name, amount: r.values[m - 1] }; });
+}
+// 本期（m 月 6 日帳單）和上一期比較的變動；1 月和去年的表名稱不一致，不比較。
+// 週期性費用（例如 4、10 月才扣）不當成新增或停止：
+//   新增＝今年第一次出現且下一期還有；本期才有＝這期有、上期沒有的其他情況；
+//   停止＝前兩期都有扣、本期以後都不再扣（例如分期付完）；調整＝前後都有但金額不同
+function subChanges_(y, m) {
+  if (m < 2) return [];
+  return readSubs_(y).map(function (r) {
+    const v = r.values, a = v[m - 2], b = v[m - 1];
+    const before = v.slice(0, m - 2).some(function (x) { return x; }), after = v.slice(m).some(function (x) { return x; });
+    if (!a && b) return { name: r.name, text: !before && (m === 12 || v[m]) ? r.name + ' 新增 $' + fmt_(b) : r.name + ' $' + fmt_(b) + '（本期才有）' };
+    if (a && !b) return m >= 3 && v[m - 3] && !after ? { name: r.name, text: r.name + ' 停止' } : null;
+    if (a && b && a !== b) return { name: r.name, text: r.name + ' $' + fmt_(a) + '→$' + fmt_(b) };
+    return null;
+  }).filter(Boolean);
+}
+// 對某一年套用變更，回傳可還原的資料
+function applySub_(y, action, name, amount, from) {
+  const b = subBlock_(y), rows = readSubs_(y), hit = rows.filter(function (r) { return r.name === name; })[0];
+  const part = { y: y, sheet: b.spec.sheet, name: name, added: false, cells: [] };
+  if (action === 'add' && !hit) {
+    b.sh.insertRowBefore(b.last);                 // 插在訂閱區最後一列之前：一定在小計 SUM 的範圍內
+    const r = b.last, vals = [b.spec.tree ? '   ├─ ' + name : name];
+    for (let mo = 1; mo <= 12; mo++) vals.push(mo >= from ? amount : (b.spec.tree ? 0 : ''));
+    b.sh.getRange(r, 1, 1, 13).setValues([vals]);
+    b.sh.getRange(r, 14).setFormula('=SUM(B' + r + ':M' + r + ')');   // 和其他訂閱列一樣的全年總計
+    part.added = true;
+    return part;
+  }
+  if (!hit) { if (action === 'stop') return null; throw new Error('找不到訂閱「' + name + '」'); }
+  for (let mo = from; mo <= 12; mo++) {
+    const rg = b.sh.getRange(hit.row, b.spec.firstCol + mo - 1);
+    part.cells.push({ col: b.spec.firstCol + mo - 1, prev: cellState_(rg) });
+    rg.setValue(action === 'stop' ? (b.spec.tree ? 0 : '') : amount);
+  }
+  return part;
+}
+function saveSub_(a) {
+  const y = +a.y, action = String(a.action || ''), name = subName_(a.name), from = +a.from;
+  const amount = action === 'stop' ? 0 : Math.round(num_(String(a.amount).replace(/,/g, '')));
+  if (['add', 'set', 'stop'].indexOf(action) < 0) throw new Error('不認得的動作：' + action);
+  if (!name) throw new Error('請輸入訂閱名稱');
+  if (action !== 'stop' && !(amount > 0)) throw new Error('請輸入每期金額');
+  const minF = minFrom_(y);
+  if (!(from >= minF && from <= 12)) throw new Error(minF > 12 ? y + ' 年的帳單都已扣款，請切到下一年修改' : '只能從 ' + minF + ' 月帳單開始修改（之前的帳單已經扣款，屬於歷史紀錄）');
+  if (action === 'add' && readSubs_(y).some(function (r) { return r.name === name; })) throw new Error('已經有「' + name + '」，請改用修改金額');
+  const lock = LockService.getScriptLock(); lock.waitLock(10000);
+  try {
+    const parts = [applySub_(y, action, name, amount, from)];
+    let nextNote = '';
+    if (a.alsoNext && SUBS[y + 1] && ss_(y + 1)) {
+      const exists = readSubs_(y + 1).some(function (r) { return r.name === name; });
+      const p2 = applySub_(y + 1, action === 'stop' ? 'stop' : (exists ? 'set' : 'add'), name, amount, 1);
+      if (p2) { parts.push(p2); nextNote = '含 ' + (y + 1) + ' 年整年'; }
+    }
+    const props = PropertiesService.getScriptProperties(), seq = num_(props.getProperty('SUB_SEQ')) + 1;
+    props.setProperty('SUB_SEQ', String(seq));
+    appendLog_(y, { type: '訂閱', date: todayStr_(), m: from, name: name, amount: amount, acct: CONFIG.cardLabel, target: action, note: nextNote,
+                    data: JSON.stringify({ seq: seq, parts: parts.filter(Boolean) }) });
+    SpreadsheetApp.flush(); bumpVer_();
+  } finally { lock.releaseLock(); }
+  const r = getSubs_(y, from);
+  r.message = (action === 'add' ? '已新增' : action === 'stop' ? '已停用' : '已修改') + '「' + name + '」' + (action === 'stop' ? '' : ' 每期 $' + fmt_(amount)) + '，從 ' + from + ' 月 6 日帳單起';
+  return r;
+}
+function undoSub_(a) {
+  const u = lastSubLog_();
+  if (!u) throw new Error('沒有可以復原的訂閱變更');
+  if (a.row && (u.y !== +a.y || u.row !== +a.row)) throw new Error('只能復原最近一次的訂閱變更');
+  const d = JSON.parse(u.data || '{}');
+  const lock = LockService.getScriptLock(); lock.waitLock(10000);
+  try {
+    (d.parts || []).slice().reverse().forEach(function (p) {
+      const hit = readSubs_(p.y).filter(function (r) { return r.name === p.name; })[0];
+      if (!hit) throw new Error('「卡費」表裡找不到「' + p.name + '」，可能被手動改過名稱，無法復原');
+      const sh = ss_(p.y).getSheetByName(p.sheet);
+      if (p.added) sh.deleteRow(hit.row);
+      else p.cells.forEach(function (c) { restoreCell_(sh, hit.row, c.col, c.prev); });
+    });
+    logSheet_(u.y).deleteRow(u.row);
+    SpreadsheetApp.flush(); bumpVer_();
+  } finally { lock.releaseLock(); }
+  const r = getSubs_(+a.y || u.y, +a.m);
+  r.message = '已復原：' + u.name;
+  return r;
 }
 
 // ===== 8. 紀錄 =====

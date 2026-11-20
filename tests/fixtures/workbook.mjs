@@ -63,10 +63,32 @@ export function buildWorkbook2026(g, opt = {}) {
     tw.set(row, 1, PREPAID.items.find(x => x[0] === row)[1]);
   });
   for (let m = 1; m <= 12; m++) { tw.set(4, 16 + m, 60000); tw.set(7, 1 + m, 80000 + m * 1000); tw.set(37, 1 + m, 0); }
+  buildCardSheets(g);
   // 其他會被讀到的表
   book.sheet('收入'); book.sheet('總表'); book.sheet('滿月記帳'); book.sheet('永豐銀行準備金定期定額'); book.sheet('郵局優存帳戶');
   // 一卡通、試算表升級旗標（ensureSchema2_ 只跑一次；測試裡視為已升級）
   g.props.set('SCHEMA2_2026', '2026-11-01 00:00');
   if (opt.ecard !== false) g.props.set('ECARD', JSON.stringify({ bal: 320, date: '2026-11-01', seen: [] }));
   return { book, tw, month: m => book.getSheetByName('2026年' + m + '月') };
+}
+
+// 「卡費」表：版面（標題文字、列的相對位置）照真實試算表，訂閱名稱與金額是虛構的
+export const SUBS_2026 = [['影音A', [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 90]], ['影音B', Array(12).fill(630)], ['雲端C', Array(12).fill(300)],
+  ['停用D', Array(12).fill(0)], ['工具E', [0, 600, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]], ['AI F', Array(12).fill(650)]];
+export const SUBS_2027 = [['影音B', Array(12).fill(630)], ['雲端C', Array(12).fill(300)], ['AI F', Array(12).fill(650)],
+  ['電視G', [0, 0, 0, 850, 0, 0, 0, 0, 0, 850, 0, 0]], ['購物 分期（3期）', [1496, 1496, 1496, 0, 0, 0, 0, 0, 0, 0, 0, 0]]];
+export function buildCardSheets(g) {
+  const a = g.book(2026).sheet('卡費');
+  a.set(1, 1, '注意事項').set(4, 1, '前期帳單金額').set(5, 1, '聯邦預留繳款').set(6, 1, '月份');
+  for (let m = 1; m <= 12; m++) { a.set(6, 1 + m, m + '月'); a.put(5, 1 + m, { v: 0, f: '=SUM(' + 'BCDEFGHIJKLM'[m - 1] + '7:' + 'BCDEFGHIJKLM'[m - 1] + String(8 + SUBS_2026.length) + ')' }); }
+  SUBS_2026.forEach(([n, v], i) => { const r = 7 + i; a.set(r, 1, n); v.forEach((x, k) => { if (x) a.set(r, 2 + k, x); }); a.put(r, 14, { v: 0, f: '=SUM(B' + r + ':M' + r + ')' }); });
+  const r0 = 7 + SUBS_2026.length;
+  a.set(r0, 1, '非固定消費').set(r0 + 1, 1, '還款').set(r0 + 3, 1, '剩餘欠款');
+  const b = g.book(2027).sheet('卡費');
+  b.set(1, 1, '【聯邦信用卡帳單與各月刷卡自動連動總表】').set(3, 1, '項目 / 月份').set(4, 1, '① 聯邦固定數位訂閱小計(月初預扣)');
+  SUBS_2027.forEach(([n, v], i) => { const r = 5 + i; b.set(r, 1, (i === SUBS_2027.length - 1 ? '   └─ ' : '   ├─ ') + n); v.forEach((x, k) => b.set(r, 2 + k, x)); b.put(r, 14, { v: 0, f: '=SUM(B' + r + ':M' + r + ')' }); });
+  const r1 = 5 + SUBS_2027.length;
+  b.set(r1, 1, '【自動連動：各月非固定刷卡與22日結帳分流】').set(r1 + 1, 1, '② 本月6日實際出帳應繳之非固定刷卡').set(r1 + 2, 1, '★ 本月6日聯邦卡應繳帳單總額 (①+②)');
+  for (let m = 1; m <= 12; m++) b.set(r1 + 2, 1 + m, 10000 + m);   // 帳單總額：用來確認插入列後仍讀得到
+  return { a, b };
 }

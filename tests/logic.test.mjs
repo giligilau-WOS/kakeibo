@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { loadGas, rng, RUNS } from './helpers/gas.mjs';
-import { buildWorkbook2026, CATS, TRAVEL_FULL } from './fixtures/workbook.mjs';
+import { buildWorkbook2026, CATS, TRAVEL_FULL, SUBS_2026, SUBS_2027 } from './fixtures/workbook.mjs';
 import { fakeGoogle, withVer } from './helpers/fake-script-api.mjs';
 
 const TOPUP = '一卡通儲值';
@@ -547,6 +547,98 @@ test('自我更新：App 的 selfUpdate 需要正確密碼', () => {
   assert.throws(() => g.call('api', 'wrong', 'selfUpdate', {}), /密碼錯誤/);
   assert.equal(f.writes.length, 0);
   assert.equal(g.call('api', 't', 'selfUpdate', {}).updated, true);
+});
+
+// ---------------------------------------------------------------- 固定訂閱（卡費表）
+const cardSnap = g => JSON.stringify([2026, 2027].map(y => [...g.book(y).getSheetByName('卡費').cells].sort()));
+const subOf = (g, y, name) => g.call('readSubs_', y).find(r => r.name === name);
+
+test('固定訂閱：讀出卡費表的訂閱區，名稱去掉樹狀符號，每月合計正確', () => {
+  const { g } = fresh(20);
+  for (const [y, list] of [[2026, SUBS_2026], [2027, SUBS_2027]]) {
+    const d = g.call('getSubs_', y, 12);
+    assert.deepEqual(d.rows.map(r => r.name), list.map(x => x[0]));
+    for (let k = 0; k < 12; k++) assert.equal(d.totals[k], list.reduce((t, x) => t + x[1][k], 0));
+    assert.equal(d.rows.find(r => /分期/.test(r.name)) ? d.rows.find(r => /分期/.test(r.name)).installment : true, true);
+  }
+  assert.equal(g.call('getSubs_', 2026, 12).minFrom, 12, '11/18：11 月帳單已扣款，只能從 12 月改');
+  assert.equal(g.call('getSubs_', 2027, 1).minFrom, 1);
+});
+
+test('固定訂閱：任意新增／修改／停用（可含明年），只動到該列的指定月份以後；全部復原後兩份卡費表回到原狀', () => {
+  for (let i = 0; i < RUNS; i++) {
+    const R = rng(7100 + i), { g } = fresh(7100 + i), orig = cardSnap(g);
+    const names = ['影音B', '雲端C', 'AI F', '停用D', '新訂閱X', '新訂閱Y'];
+    let ops = 0;
+    for (let k = 0, n = R.int(1, 5); k < n; k++) {
+      const y = R.pick([2026, 2027]), minF = g.call('minFrom_', y), from = R.int(minF, 12);
+      const name = R.pick(names), exists = !!subOf(g, y, name), action = exists ? R.pick(['set', 'stop']) : 'add';
+      const amount = R.pick([1, 99, 690, R.int(1, 5000)]), alsoNext = y === 2026 && R.bool();
+      const before = { [2026]: g.call('readSubs_', 2026), [2027]: g.call('readSubs_', 2027) };
+      g.nextRequest();
+      g.call('saveSub_', { y, action, name, amount, from, alsoNext });
+      g.nextRequest(); ops++;
+      const after = g.call('readSubs_', y), row = after.find(r => r.name === name);
+      assert.ok(row, '改完要找得到「' + name + '」');
+      for (let mo = 1; mo <= 12; mo++) {
+        const want = mo < from ? (exists ? before[y].find(r => r.name === name).values[mo - 1] : 0) : (action === 'stop' ? 0 : amount);
+        assert.equal(row.values[mo - 1], want, y + ' 年 ' + name + ' ' + mo + ' 月（' + action + ' 從 ' + from + ' 月）');
+      }
+      before[y].filter(r => r.name !== name).forEach(r => assert.deepEqual(after.find(x => x.name === r.name).values, r.values, '其他訂閱不能被動到：' + r.name));
+      // 新增的列一定在訂閱區裡面（最後一列之前），真的試算表才會把它算進小計 SUM
+      if (action === 'add') { const blk = g.call('subBlock_', y); assert.ok(row.row >= blk.first && row.row < blk.last, '新增列的位置 ' + row.row + ' 不在 ' + blk.first + '～' + (blk.last - 1)); }
+      if (y === 2027) assert.match(g.book(2027).getSheetByName('卡費').val(row.row, 1), /^   [├└]─ /, '2027 要保留樹狀符號');
+      if (alsoNext && action !== 'stop') assert.deepEqual(Array.from(subOf(g, 2027, name).values), Array(12).fill(amount), '明年整年要套用');   // vm 裡的陣列原型不同，先轉成外面的陣列
+    }
+    // 2027 的帳單總額列被往下推了，仍要讀得到
+    assert.equal(g.call('rowValue_', 2027, g.get('PROFILE')[2027].cardDue, 3), 10003);
+    for (let k = 0; k < ops; k++) { g.nextRequest(); g.call('undoSub_', {}); }
+    g.nextRequest();
+    assert.equal(cardSnap(g), orig, '全部復原後要回到原狀');
+    assert.equal(g.call('readLog_', 2026).filter(r => r.type === '訂閱').length + g.call('readLog_', 2027).filter(r => r.type === '訂閱').length, 0);
+    assert.throws(() => g.call('undoSub_', {}), /沒有可以復原/);
+  }
+});
+
+test('固定訂閱：已扣款的帳單月份（歷史紀錄）不能改；名稱重複、金額 0 也會擋下', () => {
+  const { g } = fresh(21), orig = cardSnap(g);
+  for (const a of [{ y: 2026, action: 'set', name: '影音B', amount: 700, from: 11 }, { y: 2026, action: 'set', name: '影音B', amount: 700, from: 1 },
+                   { y: 2027, action: 'add', name: '影音B', amount: 100, from: 3 }, { y: 2027, action: 'set', name: '影音B', amount: 0, from: 3 },
+                   { y: 2027, action: 'set', name: '不存在', amount: 10, from: 3 }, { y: 2027, action: 'add', name: '', amount: 10, from: 3 }])
+    assert.throws(() => g.call('saveSub_', a), undefined, JSON.stringify(a));
+  assert.equal(cardSnap(g), orig);
+});
+
+test('固定訂閱：只能復原最近一次；同一個請求送兩次只算一次', () => {
+  const { g } = fresh(22);
+  g.call('api', 't', 'saveSub', { y: 2027, action: 'set', name: '影音B', amount: 700, from: 5, rid: 's1' }); g.nextRequest();
+  g.call('api', 't', 'saveSub', { y: 2027, action: 'set', name: '影音B', amount: 700, from: 5, rid: 's1' }); g.nextRequest();
+  g.call('api', 't', 'saveSub', { y: 2027, action: 'add', name: '新X', amount: 99, from: 2, rid: 's2' }); g.nextRequest();
+  assert.equal(g.call('readLog_', 2027).filter(r => r.type === '訂閱').length, 2, '重送不能多記一筆');
+  const first = g.call('readLog_', 2027).find(r => r.type === '訂閱' && r.name === '影音B');
+  assert.throws(() => g.call('undoSub_', { y: 2027, row: first.row }), /最近一次/);
+  g.call('api', 't', 'undoSub', { rid: 'u1' }); g.nextRequest();
+  g.call('api', 't', 'undoSub', { rid: 'u1' }); g.nextRequest();
+  assert.ok(!subOf(g, 2027, '新X'), '新X 要被復原');
+  assert.equal(subOf(g, 2027, '影音B').values[4], 700, '重送的復原不能多復原一次');
+});
+
+test('固定訂閱：帳單對帳附上本期訂閱明細；今日提醒列出本期新增與漲價', () => {
+  const { g } = fresh(23);
+  for (let m = 1; m <= 12; m++) {
+    const subs = g.call('getBill_', 2027, m).subs;
+    assert.equal(subs.reduce((t, x) => t + x.amount, 0), SUBS_2027.reduce((t, x) => t + x[1][m - 1], 0), m + ' 月');
+  }
+  g.call('saveSub_', { y: 2027, action: 'add', name: 'Claude', amount: 690, from: 3 });
+  g.call('saveSub_', { y: 2027, action: 'set', name: '影音B', amount: 680, from: 3 });
+  g.nextRequest();
+  const txt = g.call('subChanges_', 2027, 3).map(c => c.text);
+  assert.ok(txt.includes('Claude 新增 $690') && txt.includes('影音B $630→$680'), JSON.stringify(txt));
+  assert.deepEqual(Array.from(g.call('subChanges_', 2027, 5).map(c => c.text)), [], '週期性費用（電視G 4、10 月）結束當期不能誤報停止');
+  const apr = Array.from(g.call('subChanges_', 2027, 4).map(c => c.text));
+  assert.ok(apr.includes('電視G $850（本期才有）'), JSON.stringify(apr));
+  assert.ok(apr.includes('購物 分期（3期） 停止'), '分期付完要提醒：' + JSON.stringify(apr));
+  assert.ok(!apr.some(x => /Claude|影音B/.test(x)), '4 月 Claude、影音B 沒有變動：' + JSON.stringify(apr));
 });
 
 // ---------------------------------------------------------------- 安全

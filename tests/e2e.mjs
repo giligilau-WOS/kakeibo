@@ -42,7 +42,7 @@ try {
   await ctx.addInitScript(u => { try { if (!localStorage.getItem('kakeiboCfg')) localStorage.setItem('kakeiboCfg', JSON.stringify({ url: u, k: 'test-token' })); } catch (e) {} }, GAS_URL);
   const page = await ctx.newPage();
   const consoleErrors = [], external = [], calls = [];
-  let offline = false, dropResponse = false, oldBackend = false, noSelfUpdate = false;
+  let offline = false, dropResponse = false, oldBackend = false, noSelfUpdate = false, htmlOnce = null, htmlLeft = 0;
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) consoleErrors.push(m.text()); });
   page.on('pageerror', e => consoleErrors.push('pageerror: ' + e.message));
   page.on('dialog', d => d.accept());
@@ -54,6 +54,10 @@ try {
       const parsed = JSON.parse(body);
       if (offline) { calls.push({ method: parsed.method, offline: true }); return route.abort('internetdisconnected'); }
       calls.push({ method: parsed.method, args: parsed.args });
+      if (htmlOnce === parsed.method) {   // 模擬 Google 在執行程式前就擋下（部署切換中、需要授權），回傳網頁
+        if (--htmlLeft <= 0) htmlOnce = null;
+        return route.fulfill({ status: 200, contentType: 'text/html', body: '<!DOCTYPE html><html><body><p>Sorry, unable to open the file at this time.</p></body></html>' });
+      }
       if (noSelfUpdate && parsed.method === 'selfUpdate')   // 模擬還沒有自我更新功能的舊後端
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: false, error: '未知的功能：selfUpdate' }) });
       g.nextRequest();
@@ -272,6 +276,105 @@ try {
     assert.equal(f.deployed().deploymentConfig.description, 'GitHub 2099.01.01-0000');
     assert.equal(f.state.files.find(x => x.name === 'Index').source, 'old');
     assert.ok(calls.some(c => c.method === 'selfUpdate'));
+  });
+
+  const card = y => g.book(y).getSheetByName('卡費');
+  const subRow = (y, name) => g.call('readSubs_', y).find(r => r.name === name);
+  await step('固定訂閱：資產頁打開清單，顯示本期（11/6 帳單）訂閱與合計', async () => {
+    await page.click('nav [data-view="assets"]');
+    await page.click('#v-assets [data-act="subs"]');
+    await page.locator('#v-subs .list').first().waitFor();
+    const txt = await page.locator('#v-subs').innerText();
+    const d = g.call('getSubs_', 2026, 11);
+    assert.match(txt, new RegExp('本期固定訂閱合計\\s*\\$' + d.totals[10].toLocaleString('en-US')));
+    assert.match(txt, /影音B/); assert.match(txt, /最早可以從 12 月 6 日帳單起修改/);
+    await shot('13-固定訂閱清單');
+  });
+
+  await step('固定訂閱：新增 Claude 690（12 月起，含明年）→ 兩份卡費表都寫入 → 按復原後兩邊都消失', async () => {
+    const before = JSON.stringify([...card(2026).cells].sort()) + JSON.stringify([...card(2027).cells].sort());
+    await page.click('#v-subs [data-sb="add"]');
+    await page.fill('#sbName', 'Claude'); await page.fill('#sbAmt', '690');
+    assert.equal(await page.inputValue('#sbFrom'), '12');
+    assert.equal(await page.isChecked('#sbNext'), true);
+    await shot('14-新增訂閱');
+    await page.click('[data-se="save"]');
+    await toastHas(/已新增「Claude」 每期 \$690，從 12 月 6 日帳單起/);
+    g.nextRequest();
+    assert.deepEqual(Array.from(subRow(2026, 'Claude').values), [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 690]);
+    assert.deepEqual(Array.from(subRow(2027, 'Claude').values), Array(12).fill(690));
+    assert.ok(calls.filter(c => c.method === 'saveSub').every(c => c.args.rid), '修改要帶請求編號');
+    await page.locator('#v-subs .qbar').waitFor();
+    assert.match(await page.locator('#v-subs .qbar').innerText(), /新增「Claude」/);
+    await page.click('#v-subs [data-sb="undo"]');
+    await toastHas(/已復原：Claude/);
+    await page.waitForFunction(() => !document.querySelector('#v-subs .qbar'));
+    g.nextRequest();
+    assert.equal(JSON.stringify([...card(2026).cells].sort()) + JSON.stringify([...card(2027).cells].sort()), before, '復原後卡費表要回到原狀');
+  });
+
+  await step('固定訂閱：影音B 從 12 月起改成 680（只改今年）；切到明年看得到 2027 的訂閱', async () => {
+    await page.click('#v-subs [data-sb="edit"][data-n="影音B"]');
+    await page.fill('#sbAmt', '680');
+    await page.uncheck('#sbNext');
+    await page.click('[data-se="save"]');
+    await toastHas(/已修改「影音B」 每期 \$680/);
+    g.nextRequest();
+    const v = Array.from(subRow(2026, '影音B').values);
+    assert.deepEqual(v.slice(0, 11), Array(11).fill(630), '11 月以前（已扣款）不能動');
+    assert.equal(v[11], 680);
+    assert.deepEqual(Array.from(subRow(2027, '影音B').values), Array(12).fill(630), '沒勾明年就不動 2027');
+    await page.click('#v-subs [data-act="sb-next"]');
+    await page.waitForFunction(() => /12 月 6 日帳單/.test(document.getElementById('v-subs').innerText) && /\$680/.test(document.getElementById('v-subs').innerText));
+    await page.click('#v-subs [data-act="sb-next"]');
+    await page.waitForFunction(() => /2027年1月/.test(document.getElementById('v-subs').innerText) && /購物 分期/.test(document.getElementById('v-subs').innerText));
+    await shot('15-明年訂閱');
+    // 還原，避免影響後面的步驟
+    await page.click('#v-subs [data-act="sb-prev"]');
+    await page.waitForFunction(() => /\$680/.test(document.getElementById('v-subs').innerText));
+    await page.click('#v-subs [data-sb="undo"]');
+    await toastHas(/已復原：影音B/);
+  });
+
+  await step('信用卡對帳：顯示本期固定訂閱明細', async () => {
+    await page.click('nav [data-view="records"]');
+    await page.click('#v-records [data-act="bill"]');
+    await page.waitForFunction(() => /本期固定訂閱：/.test(document.getElementById('modalBox').innerText));
+    const bill = g.call('getBill_', 2026, 12);
+    for (const x of bill.subs) assert.match(await page.locator('#modalBox').innerText(), new RegExp(x.name.replace(/[()（）]/g, '.') + ' \\$' + x.amount.toLocaleString('en-US')));
+    await page.click('[data-b="close"]');
+  });
+
+  await step('回應不是資料時顯示中文說明；開啟時沒問到後端版本，之後自動補上', async () => {
+    htmlOnce = 'init'; htmlLeft = 1;
+    await page.reload();
+    await toastHas(/後端回應的不是資料（可能正在部署新版本或需要重新授權）.*原文：Sorry, unable to open the file/);
+    await shot('16-回應不是資料');
+    await page.click('nav [data-view="today"]');
+    const v = g.get('BACKEND_VERSION');
+    await page.waitForFunction(t => document.getElementById('v-today').innerText.indexOf('後端版本 ' + t) >= 0, v, { timeout: 8000 });
+  });
+
+  await step('開啟時連續 3 次都失敗：之後只要有一個請求成功，就自動補問後端版本', async () => {
+    htmlOnce = 'init'; htmlLeft = 3;
+    const nVer = calls.filter(c => c.method === 'version').length;
+    // 數 init 請求：第一次＋自動重試 2 次（每次間隔 4 秒），全部被擋下
+    const threeInits = new Promise((res, rej) => {
+      let n = 0;
+      const on = req => { if (req.url().startsWith(GAS_URL) && JSON.parse(req.postData() || '{}').method === 'init' && ++n === 3) { page.off('request', on); res(); } };
+      page.on('request', on);
+      setTimeout(() => { page.off('request', on); rej(new Error('15 秒內只看到 ' + n + ' 次 init，開啟失敗後沒有自動重試')); }, 15000);   // 等待上限，不是硬等
+    });
+    await page.reload();
+    await threeInits;
+    await toastHas(/後端回應的不是資料/);
+    assert.equal(htmlOnce, null, '三次 init 都應該被擋下');
+    await page.click('nav [data-view="records"]');
+    await page.locator('#v-records .list').first().waitFor();
+    await page.click('nav [data-view="today"]');
+    const v = g.get('BACKEND_VERSION');
+    await page.waitForFunction(t => document.getElementById('v-today').innerText.indexOf('後端版本 ' + t) >= 0, v, { timeout: 8000 });
+    assert.ok(calls.filter(c => c.method === 'version').length > nVer, '要自動補問版本');
   });
 
   await step('沒有任何對外連線、console 沒有錯誤', async () => {

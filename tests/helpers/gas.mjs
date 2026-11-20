@@ -45,6 +45,12 @@ export class FakeSheet {
     this.cells = next;
   }
   setFrozenRows() { return this; }
+  // 在第 row 列之前插入一列：第 row 列以後全部往下移（假實作不會改寫公式字串裡的參照）
+  insertRowBefore(row) {
+    const next = new Map();
+    for (const [k, v] of this.cells) { const [r, c] = k.split(',').map(Number); next.set((r >= row ? r + 1 : r) + ',' + c, v); }
+    this.cells = next; return this;
+  }
 }
 class FakeRange {
   constructor(sh, r, c, nr, nc) { Object.assign(this, { sh, r, c, nr, nc }); }
