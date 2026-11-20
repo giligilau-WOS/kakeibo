@@ -10,6 +10,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { loadGas } from './helpers/gas.mjs';
+import { fakeGoogle, withVer } from './helpers/fake-script-api.mjs';
+import { readFileSync } from 'node:fs';
 import { buildWorkbook2026 } from './fixtures/workbook.mjs';
 
 // 用環境裡已安裝的 Playwright（全域安裝，ESM import 找不到，所以用 require）
@@ -40,7 +42,7 @@ try {
   await ctx.addInitScript(u => { try { if (!localStorage.getItem('kakeiboCfg')) localStorage.setItem('kakeiboCfg', JSON.stringify({ url: u, k: 'test-token' })); } catch (e) {} }, GAS_URL);
   const page = await ctx.newPage();
   const consoleErrors = [], external = [], calls = [];
-  let offline = false, dropResponse = false, oldBackend = false;
+  let offline = false, dropResponse = false, oldBackend = false, noSelfUpdate = false;
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) consoleErrors.push(m.text()); });
   page.on('pageerror', e => consoleErrors.push('pageerror: ' + e.message));
   page.on('dialog', d => d.accept());
@@ -52,8 +54,11 @@ try {
       const parsed = JSON.parse(body);
       if (offline) { calls.push({ method: parsed.method, offline: true }); return route.abort('internetdisconnected'); }
       calls.push({ method: parsed.method, args: parsed.args });
+      if (noSelfUpdate && parsed.method === 'selfUpdate')   // 模擬還沒有自我更新功能的舊後端
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: false, error: '未知的功能：selfUpdate' }) });
       g.nextRequest();
       const out = g.call('doPost', { postData: { contents: body } });
+      if (parsed.method === 'selfUpdate' && JSON.parse(out.text).ok) oldBackend = false;   // 更新成功後，手機連到的就是新後端
       if (dropResponse) return route.abort('timedout');   // 試算表已寫入，但回應在路上遺失
       let text = out.text;
       if (oldBackend) { const j = JSON.parse(text); if (j.data) delete j.data.backend; text = JSON.stringify(j); }   // 模擬沒部署新版的舊後端
@@ -234,7 +239,7 @@ try {
     await bar.waitFor();
     assert.match(await bar.innerText(), /後端還沒部署新版本/);
     await shot('11-後端版本提醒');
-    await bar.locator('button').click();
+    await bar.locator('[data-bk="close"]').click();
     assert.equal(await page.locator('#backendBar').count(), 0);
     const before = ledgerCount();
     await page.click('nav [data-view="entry"]');
@@ -244,6 +249,29 @@ try {
     await toastHas(/已記錄/);
     assert.equal(ledgerCount(), before + 1);
     oldBackend = false;
+  });
+
+  await step('立即更新：後端還沒有更新功能時顯示首次設定說明；有的話按一下就部署新版、提醒消失', async () => {
+    // 假的 GitHub 與 Apps Script API：GitHub 上有比專案新的版本
+    const code = readFileSync(join(root, 'Code_單一檔案版.gs'), 'utf8'), man = readFileSync(join(root, 'appsscript.json'), 'utf8');
+    const f = fakeGoogle({ github: { 'Code_單一檔案版.gs': withVer(code, '2099.01.01-0000'), 'appsscript.json': man },
+      files: [{ name: 'appsscript', type: 'JSON', source: man }, { name: '程式碼', type: 'SERVER_JS', source: code }, { name: 'Index', type: 'HTML', source: 'old' }] });
+    g.ctx.UrlFetchApp = f.UrlFetchApp; g.ctx.ScriptApp = f.ScriptApp;
+    oldBackend = true; noSelfUpdate = true;
+    await page.reload();
+    const bar = page.locator('#backendBar');
+    await bar.waitFor();
+    await bar.locator('[data-bk="update"]').click();
+    await page.waitForFunction(() => /第一次需要手動設定/.test(document.getElementById('backendBar').innerText));
+    await shot('12-首次設定說明');
+    assert.equal(f.writes.length, 0);
+    noSelfUpdate = false;
+    await bar.locator('[data-bk="update"]').click();
+    await toastHas(/已從 .+ 更新到 2099\.01\.01-0000/, 8000);
+    await page.waitForFunction(() => !document.getElementById('backendBar'));
+    assert.equal(f.deployed().deploymentConfig.description, 'GitHub 2099.01.01-0000');
+    assert.equal(f.state.files.find(x => x.name === 'Index').source, 'old');
+    assert.ok(calls.some(c => c.method === 'selfUpdate'));
   });
 
   await step('沒有任何對外連線、console 沒有錯誤', async () => {

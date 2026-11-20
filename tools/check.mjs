@@ -4,6 +4,7 @@
 //   1. Apps Script 後端（*.gs）語法
 //   2. index.html 內所有 <script> 的語法
 //   3. 機密外洩掃描：部署網址、密碼 k、Token 不可出現在 repo 中
+//   5. appsscript.json：授權範圍要涵蓋用到的服務
 //   4. 版本號：改了 .gs／index.html 就要調高 BACKEND_VERSION／APP_VERSION；前端需要的後端版本不能比 repo 的後端新
 import { readFileSync, readdirSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -70,8 +71,28 @@ else {
       const was = verOf(before, name);
       if (was && now <= was) { failed++; console.log(`✘ 版本號：${file} 和 ${base} 不同，但 ${name} 沒有調高（${base}：${was}，現在：${now}）`); }
     }
+    const manBefore = show('appsscript.json'), wasB = verOf(show(GS) || '', 'BACKEND_VERSION');
+    if (manBefore !== null && manBefore !== readFileSync(join(root, 'appsscript.json'), 'utf8') && wasB && backendV <= wasB) { failed++; console.log(`✘ 版本號：appsscript.json 有改，但 BACKEND_VERSION 沒有調高（自我更新只在版本變新時才會部署）`); }
     console.log(`✔ 版本號 前端 ${appV}／後端 ${backendV}／前端需要後端 ≥ ${needV}`);
   }
 }
+// 5. Apps Script 設定檔：授權範圍要涵蓋程式用到的服務與自我更新功能。
+//    明確列出 oauthScopes 後 Google 不再自動偵測，少一項 App 就會因權限不足而壞掉。
+try {
+  const man = JSON.parse(readFileSync(join(root, 'appsscript.json'), 'utf8'));
+  const scopes = man.oauthScopes || [], need = new Set();
+  const g = 'https://www.googleapis.com/auth/';
+  if (/\bSpreadsheetApp\./.test(gsText)) need.add(g + 'spreadsheets');
+  if (/\bDriveApp\./.test(gsText)) need.add(g + 'drive');
+  if (/\bScriptApp\.(newTrigger|getProjectTriggers|deleteTrigger)/.test(gsText)) need.add(g + 'script.scriptapp');
+  if (/\bUrlFetchApp\./.test(gsText)) need.add(g + 'script.external_request');
+  const su = gsText.match(/const SELF_UPDATE_SCOPES = \[([^\]]*)\]/);
+  if (su) (su[1].match(/'[^']+'/g) || []).forEach(x => need.add(x.slice(1, -1)));
+  const missing = [...need].filter(x => scopes.indexOf(x) < 0);
+  if (missing.length) { failed++; console.log('✘ appsscript.json 缺少授權範圍：' + missing.join('、')); }
+  else if (!man.webapp || man.webapp.executeAs !== 'USER_DEPLOYING') { failed++; console.log('✘ appsscript.json 的 webapp 設定不對（要以部署者身分執行）'); }
+  else console.log('✔ appsscript.json 授權範圍 ' + scopes.length + ' 項');
+} catch (e) { failed++; console.log('✘ appsscript.json 讀不到或不是正確的 JSON：' + e.message); }
+
 console.log(failed ? `\n${failed} 項未通過` : '\n全部通過');
 process.exit(failed ? 1 : 0);

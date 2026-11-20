@@ -13,6 +13,7 @@
 
 | 檔案 | 用途 |
 |---|---|
+| `appsscript.json` | Apps Script 設定檔（時區、授權範圍、網頁部署設定），自我更新時一起部署 |
 | `Code_單一檔案版.gs` | Apps Script 後端，單一檔案。內含 `CONFIG`／`PROFILE`（各年度試算表 ID 與儲存格位置）、`api()` 路由、各功能函式，最後的 `APP_HTML` 是**內嵌的 Apps Script 網頁版前端** |
 | `index.html` | GitHub Pages 獨立前端（PWA），用 `fetch` POST 到 Apps Script `/exec`，連線網址和密碼 `k` 存在 localStorage `kakeiboCfg` |
 | `manifest.json`、`icon-*.png` | PWA 設定 |
@@ -29,11 +30,11 @@
 使用者用網頁版 Claude Code，常在學校電腦上作業，沒有固定的電腦可以跑 clasp。
 
 - **前端**：`index.html` push 到 `main`，GitHub Pages 會自動更新。
-- **後端**：**repo 裡的 `Code_單一檔案版.gs` 是唯一正式版本。** 改完 push 之後，請使用者照下列步驟手動貼到 Apps Script：
-  1. 打開 `https://raw.githubusercontent.com/giligilau-WOS/kakeibo/main/Code_單一檔案版.gs`，全選複製。
-  2. 到 Apps Script「Giau的家計簿App」編輯器，把程式碼檔全部取代貼上，然後儲存。
-  3. 依序點「部署 → 管理部署 → 編輯（鉛筆）→ 版本：新版本 → 部署」。網址不會變，前端不用改設定。
-- 後端有改的話，回報時要明確寫出「需要貼到 Apps Script 並部署新版本」。只改前端就不用。
+- **後端**：**repo 裡的 `Code_單一檔案版.gs` 與 `appsscript.json` 是唯一正式版本。** 改完 push 到 `main` 之後，請使用者更新後端（擇一）：
+  - **App 按「立即更新」**（今日頁頂端的「後端還沒部署新版本」提醒裡），或在 Apps Script 編輯器執行 `更新到最新版`。後端會從 GitHub `main` 抓最新程式、建立新版本並部署，網址不變；不准降版，「Index」等其他檔案原樣保留。出問題時執行 `退回上一版`。
+  - **手動（自我更新壞掉時的備援）**：打開 `https://raw.githubusercontent.com/giligilau-WOS/kakeibo/main/Code_單一檔案版.gs` 全選複製，到 Apps Script「Giau的家計簿 App」把「程式碼」全部取代貼上並儲存（`appsscript.json` 有改也要一起貼），再點「部署 → 管理部署 → 編輯（鉛筆）→ 版本：新版本 → 部署」。
+- 後端有改的話，回報時要明確寫出「需要更新後端（App 按立即更新）」。只改前端就不用。
+- 自我更新只會在 `BACKEND_VERSION` 變新時部署，所以改 `.gs` 或 `appsscript.json` 都必須調高它（`tools/check.mjs` 會擋）。`appsscript.json` 明確列了 `oauthScopes`，**程式用到新的 Google 服務時要同步加授權範圍**（`check.mjs` 會檢查常見服務），加了之後使用者要在編輯器執行一次 `更新到最新版` 重新授權。
 - **版本號**：改 `.gs` 要調高 `BACKEND_VERSION`；改 `index.html` 要調高 `APP_VERSION`；前端用到後端新功能時，把 `NEED_BACKEND` 調到對應的後端版本（`tools/check.mjs` 會擋忘記升版）。手機連到的後端比 `NEED_BACKEND` 舊時，App 頂端會提醒「後端還沒部署新版本」，今日頁底部也會顯示前後端版本。
 - 使用者如果直接在 Apps Script 編輯器裡改了程式，要請他把整份貼回 repo，否則下次貼上時會覆蓋掉那些修改。
 

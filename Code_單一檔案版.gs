@@ -28,7 +28,7 @@ const CONFIG = {
 
 // 後端版本：每次修改這個檔案都要更新（tools/check.mjs 會檢查）。
 // 前端 index.html 的 NEED_BACKEND 若比這個新，App 會提醒「後端還沒部署新版本」。
-const BACKEND_VERSION = '2026.11.20-1000';
+const BACKEND_VERSION = '2026.11.20-1200';
 
 // 各年度檔案的差異（儲存格位置）
 const PROFILE = {
@@ -208,6 +208,7 @@ function route_(method, args) {
     case 'init': return { form: getFormData_(), dashboard: getDashboard_(todayStr_()), backend: BACKEND_VERSION };
     case 'refresh': bumpVer_(); return { form: getFormData_(), dashboard: getDashboard_(todayStr_()), backend: BACKEND_VERSION };
     case 'version': return { backend: BACKEND_VERSION };
+    case 'selfUpdate': return selfUpdate_({});
     case 'add': return addEntry_(args);
     case 'update': return updateEntry_(args);
     case 'delete': return deleteEntry_(args);
@@ -1794,6 +1795,120 @@ function repayBorrow_(a) {
   SpreadsheetApp.flush(); bumpVer_();
   appendLog_(y, { type: '調用歸還', date: todayStr_(), m: m, name: b.name, amount: amt, acct: cfg.acct, target: b.key, data: b.id });
   return { ok: true, message: '已記錄歸還「' + b.name + '」$' + fmt_(amt) + '（從日常戶轉回' + cfg.acct + '）' };
+}
+
+// ===== 22. 從 GitHub 自我更新（取代手動貼上＋部署）=====
+// 第一次使用前：到 https://script.google.com/home/usersettings 開啟「Google Apps Script API」，
+// 並在編輯器執行一次「更新到最新版」完成授權。之後在 App 按「立即更新」或在編輯器執行即可。
+// 只會更新成 GitHub repo main 上的程式；「Index」等其他檔案原樣保留；部署網址不變。
+const SELF_UPDATE = { repo: 'giligilau-WOS/kakeibo', branch: 'main', codeFile: 'Code_單一檔案版.gs', manifestFile: 'appsscript.json', codeName: '程式碼', manifestName: 'appsscript' };
+// 更新功能本身需要的授權範圍（appsscript.json 一定要有，tools/check.mjs 也會檢查）
+const SELF_UPDATE_SCOPES = ['https://www.googleapis.com/auth/script.projects', 'https://www.googleapis.com/auth/script.deployments', 'https://www.googleapis.com/auth/script.external_request'];
+function 更新到最新版() { const r = selfUpdate_({}); Logger.log(r.message); return r; }
+function 退回上一版() { const r = rollbackDeploy_(); Logger.log(r.message); return r; }
+
+// 比較時忽略換行符號與檔尾空白（手動貼上常少一個檔尾換行）；設定檔依 JSON 內容比較
+function sameCode_(a, b) { const n = function (x) { return String(x || '').replace(/\r\n/g, '\n').replace(/\s+$/, ''); }; return n(a) === n(b); }
+function sameJson_(a, b) { try { return JSON.stringify(JSON.parse(a)) === JSON.stringify(JSON.parse(b)); } catch (e) { return false; } }
+function verOfCode_(src) { const m = String(src || '').match(/const BACKEND_VERSION = '([^']+)'/); return m ? m[1] : null; }
+// 從 GitHub 讀檔（用 API 而不是 raw 網址：raw 有約 5 分鐘快取，剛推上去的會讀到舊的）
+// GitHub API 對未登入的請求有每小時次數限制（Apps Script 共用對外 IP，容易被擋），被擋時改讀 raw 網址
+function githubFile_(path) {
+  const api = 'https://api.github.com/repos/' + SELF_UPDATE.repo + '/contents/' + encodeURIComponent(path) + '?ref=' + SELF_UPDATE.branch;
+  let r = UrlFetchApp.fetch(api, { headers: { Accept: 'application/vnd.github.raw' }, muteHttpExceptions: true });
+  if (r.getResponseCode() === 200) return r.getContentText('UTF-8');
+  const raw = 'https://raw.githubusercontent.com/' + SELF_UPDATE.repo + '/' + SELF_UPDATE.branch + '/' + encodeURIComponent(path) + '?t=' + Date.now();
+  r = UrlFetchApp.fetch(raw, { muteHttpExceptions: true });
+  if (r.getResponseCode() !== 200) throw new Error('讀不到 GitHub 上的 ' + path + '（HTTP ' + r.getResponseCode() + '），沒有做任何更新');
+  return r.getContentText('UTF-8');
+}
+// 呼叫 Apps Script API（以擁有者身分）
+function scriptApi_(method, path, body) {
+  const opt = { method: method, contentType: 'application/json', headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true };
+  if (body) opt.payload = JSON.stringify(body);
+  const r = UrlFetchApp.fetch('https://script.googleapis.com/v1/projects/' + ScriptApp.getScriptId() + path, opt);
+  const code = r.getResponseCode(), text = r.getContentText();
+  if (code >= 300) {
+    if (code === 403 && /Apps Script API|has not been used|disabled/i.test(text)) throw new Error('Google Apps Script API 還沒開啟：請到 https://script.google.com/home/usersettings 開啟後再試一次');
+    throw new Error('Apps Script API 錯誤（HTTP ' + code + '）：' + text.slice(0, 200));
+  }
+  return text ? JSON.parse(text) : {};
+}
+// 檢查從 GitHub 抓到的程式和設定檔，任何一項不對就丟錯（還沒寫入任何東西）
+function checkNewCode_(code, manifestText) {
+  const v = verOfCode_(code);
+  if (!v) throw new Error('GitHub 上的程式找不到 BACKEND_VERSION，可能抓到錯的檔案，沒有更新');
+  ['function api(', 'function doPost(', 'function selfUpdate_('].forEach(function (k) { if (String(code).indexOf(k) < 0) throw new Error('GitHub 上的程式缺少「' + k + '」，可能不完整，沒有更新'); });
+  let man;
+  try { man = JSON.parse(manifestText); } catch (e) { throw new Error('GitHub 上的 appsscript.json 不是正確的 JSON，沒有更新'); }
+  const scopes = man.oauthScopes || [];
+  const missing = SELF_UPDATE_SCOPES.filter(function (x) { return scopes.indexOf(x) < 0; });
+  if (missing.length) throw new Error('appsscript.json 缺少授權範圍：' + missing.join('、') + '，沒有更新');
+  if (!man.webapp) throw new Error('appsscript.json 少了 webapp 設定，沒有更新');
+  return v;
+}
+// 找要更新的網頁部署：Script Properties 有 DEPLOY_ID 就用它；否則必須剛好只有一個（不用猜的）
+function pickDeployment_(list) {
+  const want = PropertiesService.getScriptProperties().getProperty('DEPLOY_ID');
+  const web = (list || []).filter(function (d) {
+    return d.deploymentConfig && d.deploymentConfig.versionNumber && (d.entryPoints || []).some(function (e) { return e.entryPointType === 'WEB_APP'; });
+  });
+  if (want) { const hit = web.filter(function (d) { return d.deploymentId === want; })[0]; if (!hit) throw new Error('找不到 DEPLOY_ID 指定的網頁部署，沒有更新'); return hit; }
+  if (web.length === 1) return web[0];
+  throw new Error(web.length ? '有 ' + web.length + ' 個網頁部署，不確定要更新哪一個。請在「專案設定 → 指令碼屬性」新增 DEPLOY_ID＝App 連線網址中 /s/ 和 /exec 之間那一段，再試一次' : '找不到已部署的網頁應用程式，請先手動部署一次');
+}
+function deployedVer_(d) { const m = String((d.deploymentConfig || {}).description || '').match(/^GitHub (\S+)$/); return m ? m[1] : null; }
+function logSelfUpdate_(rec) {
+  const p = PropertiesService.getScriptProperties();
+  let a = []; try { a = JSON.parse(p.getProperty('SELF_UPDATE_LOG') || '[]'); } catch (e) { a = []; }
+  a.push(rec); p.setProperty('SELF_UPDATE_LOG', JSON.stringify(a.slice(-10)));
+}
+/**
+ * 從 GitHub main 更新：
+ * 1. 抓程式與設定檔並檢查（版本不能比專案裡的舊、關鍵函式要在、授權範圍要齊）
+ * 2. 先確定要更新哪個部署，再寫入程式（避免寫了一半）
+ * 3. 程式有變才寫入；部署的版本比 GitHub 舊（或是手動部署、看不出版本）才建立新版本並部署
+ */
+function selfUpdate_(opt) {
+  opt = opt || {};
+  const lock = LockService.getScriptLock(); lock.waitLock(30000);
+  try {
+    const code = githubFile_(SELF_UPDATE.codeFile), manifest = githubFile_(SELF_UPDATE.manifestFile);
+    const newV = checkNewCode_(code, manifest);
+    const dep = pickDeployment_(scriptApi_('get', '/deployments').deployments);
+    const content = scriptApi_('get', '/content'), files = content.files || [];
+    const codeF = files.filter(function (f) { return f.name === SELF_UPDATE.codeName && f.type === 'SERVER_JS'; })[0];
+    const manF = files.filter(function (f) { return f.name === SELF_UPDATE.manifestName && f.type === 'JSON'; })[0];
+    if (!codeF || !manF) throw new Error('專案裡找不到「' + SELF_UPDATE.codeName + '」或 appsscript 檔，沒有更新');
+    const headV = verOfCode_(codeF.source) || '';
+    if (newV < headV) throw new Error('GitHub 上是 ' + newV + '，比專案裡的 ' + headV + ' 舊，不會降版');
+    const codeChanged = sameCode_(codeF.source, code) === false || sameJson_(manF.source, manifest) === false;
+    if (codeChanged && newV === headV && !opt.force) throw new Error('GitHub 上的程式和專案不同，但版本號一樣（' + newV + '），沒有更新；請確認 BACKEND_VERSION 有調高');
+    const depV = deployedVer_(dep);
+    if (!codeChanged && depV && depV >= newV) return { ok: true, updated: false, version: newV, message: '已經是最新版 ' + newV };
+    if (codeChanged) {
+      scriptApi_('put', '/content', { files: files.map(function (f) {
+        const src = f === codeF ? code : (f === manF ? manifest : f.source);
+        return { name: f.name, type: f.type, source: src };
+      }) });
+    }
+    const ver = scriptApi_('post', '/versions', { description: 'GitHub ' + newV });
+    const prev = dep.deploymentConfig.versionNumber;
+    scriptApi_('put', '/deployments/' + dep.deploymentId, { deploymentConfig: { scriptId: ScriptApp.getScriptId(), versionNumber: ver.versionNumber, manifestFileName: SELF_UPDATE.manifestName, description: 'GitHub ' + newV } });
+    logSelfUpdate_({ at: Utilities.formatDate(new Date(), CONFIG.timezone, 'yyyy-MM-dd HH:mm'), from: depV || headV, to: newV, version: ver.versionNumber, prevVersion: prev });
+    return { ok: true, updated: true, version: newV, versionNumber: ver.versionNumber, message: '已從 ' + (depV || headV || '舊版') + ' 更新到 ' + newV + '（部署版本 ' + ver.versionNumber + '，網址不變）' };
+  } finally { lock.releaseLock(); }
+}
+// 把網頁部署指回上一個版本（緊急用；不會改動專案裡的程式）
+function rollbackDeploy_() {
+  const dep = pickDeployment_(scriptApi_('get', '/deployments').deployments);
+  const cur = dep.deploymentConfig.versionNumber;
+  const vs = (scriptApi_('get', '/versions').versions || []).map(function (v) { return v.versionNumber; }).filter(function (n) { return n < cur; });
+  if (!vs.length) throw new Error('目前已是最早的版本，無法退回');
+  const prev = Math.max.apply(null, vs);
+  scriptApi_('put', '/deployments/' + dep.deploymentId, { deploymentConfig: { scriptId: ScriptApp.getScriptId(), versionNumber: prev, manifestFileName: SELF_UPDATE.manifestName, description: '退回版本 ' + prev } });
+  logSelfUpdate_({ at: Utilities.formatDate(new Date(), CONFIG.timezone, 'yyyy-MM-dd HH:mm'), rollback: true, version: prev, prevVersion: cur });
+  return { ok: true, version: prev, message: '已把部署從版本 ' + cur + ' 退回版本 ' + prev };
 }
 
 // ===== 8. 紀錄 =====

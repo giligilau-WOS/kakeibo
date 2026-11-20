@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { loadGas, rng, RUNS } from './helpers/gas.mjs';
 import { buildWorkbook2026, CATS, TRAVEL_FULL } from './fixtures/workbook.mjs';
+import { fakeGoogle, withVer } from './helpers/fake-script-api.mjs';
 
 const TOPUP = '一卡通儲值';
 function fresh(seed, opt) {
@@ -410,6 +411,141 @@ test('版本：init／refresh／version 都回報後端版本，且不低於前�
   for (const m of ['init', 'refresh', 'version']) assert.equal(g.call('api', 't', m, {}).backend, v, m);
   const need = readFileSync(new URL('../index.html', import.meta.url), 'utf8').match(/NEED_BACKEND = '([^']+)'/)[1];
   assert.ok(need <= v, '前端需要 ' + need + '，後端只有 ' + v);
+});
+
+// ---------------------------------------------------------------- 從 GitHub 自我更新
+const REPO_CODE = readFileSync(new URL('../Code_單一檔案版.gs', import.meta.url), 'utf8');
+const REPO_MAN = readFileSync(new URL('../appsscript.json', import.meta.url), 'utf8');
+const INDEX_SRC = '<!DOCTYPE html><html>舊的 Index，不能被動到</html>';
+function selfUpdateRig(o) {
+  const g = loadGas({ props: Object.assign({ TOKEN: 't' }, o.props || {}) });
+  const f = fakeGoogle({
+    github: Object.assign({ 'Code_單一檔案版.gs': o.github, 'appsscript.json': o.manifest || REPO_MAN }, o.githubExtra || {}),
+    githubStatus: o.githubStatus, apiEnabled: o.apiEnabled, deployments: o.deployments, apiRateLimited: o.apiRateLimited,
+    files: [{ name: 'appsscript', type: 'JSON', source: o.headManifest || REPO_MAN }, { name: '程式碼', type: 'SERVER_JS', source: o.head }, { name: 'Index', type: 'HTML', source: INDEX_SRC }]
+  });
+  if (o.depDesc !== undefined) f.deployed().deploymentConfig.description = o.depDesc;
+  g.ctx.UrlFetchApp = f.UrlFetchApp; g.ctx.ScriptApp = f.ScriptApp;
+  return { g, f };
+}
+const fileOf = (f, n) => f.state.files.find(x => x.name === n);
+
+test('自我更新：GitHub 較新時寫入程式與設定檔、建立新版本並更新原部署；Index 原樣保留', () => {
+  const { g, f } = selfUpdateRig({ head: withVer(REPO_CODE, '2026.11.20-1200'), github: withVer(REPO_CODE, '2026.12.01-0900') });
+  const r = g.call('selfUpdate_', {});
+  assert.equal(r.updated, true);
+  assert.equal(fileOf(f, '程式碼').source, withVer(REPO_CODE, '2026.12.01-0900'));
+  assert.equal(fileOf(f, 'appsscript').source, REPO_MAN);
+  assert.equal(fileOf(f, 'Index').source, INDEX_SRC);
+  assert.equal(f.state.files.length, 3);
+  assert.equal(f.deployed().deploymentConfig.versionNumber, 4);
+  assert.equal(f.deployed().deploymentConfig.description, 'GitHub 2026.12.01-0900');
+  assert.equal(f.deployed('HEAD-ID').deploymentConfig.versionNumber, undefined, '不能動到 HEAD 測試部署');
+});
+
+test('自我更新：任意版本組合都遵守「不降版、同版不同內容不更新、已是最新不動」', () => {
+  const vs = ['2026.11.20-1000', '2026.11.20-1200', '2026.11.21-0800', '2026.12.01-0900', '2027.01.02-0000'];
+  const stats = {};
+  for (let i = 0; i < RUNS; i++) {
+    const R = rng(5600 + i), vh = R.pick(vs), vg = R.pick(vs), vd = R.pick([null, 'manual', R.pick(vs)]);
+    const body = R.pick(['same', 'ws', 'diff']);
+    let gh = withVer(REPO_CODE, vg);
+    let head = withVer(REPO_CODE, vh);
+    if (vg === vh) head = body === 'same' ? gh : body === 'ws' ? gh.replace(/\n$/, '') + '\r\n\n' : gh.replace('function api(', '// 別的內容\nfunction api(');
+    const { g, f } = selfUpdateRig({ head, github: gh, depDesc: vd === null ? '' : vd === 'manual' ? '手動部署' : 'GitHub ' + vd });
+    const projState = () => JSON.stringify({ files: f.state.files, versions: f.state.versions, deployments: f.state.deployments });   // 只比 Apps Script 專案（GitHub 讀取紀錄不算）
+    const before = projState();
+    let res, err;
+    try { res = g.call('selfUpdate_', {}); } catch (e) { err = e; }
+    const sameCode = vg === vh && body !== 'diff';
+    if (vg < vh) { assert.ok(err && /不會降版/.test(err.message), '降版要被擋'); assert.equal(f.writes.length, 0); stats.down = (stats.down || 0) + 1; continue; }
+    if (vg === vh && body === 'diff') { assert.ok(err && /版本號一樣/.test(err.message)); assert.equal(f.writes.length, 0); stats.samever = (stats.samever || 0) + 1; continue; }
+    assert.ok(!err, err && err.message);
+    const depV = (vd && vd !== 'manual') ? vd : null;
+    if (sameCode && depV && depV >= vg) { assert.equal(res.updated, false); assert.equal(f.writes.length, 0); assert.equal(projState(), before); stats.latest = (stats.latest || 0) + 1; continue; }
+    assert.equal(res.updated, true);
+    assert.equal(f.writes.filter(w => w.path === '/content').length, sameCode ? 0 : 1, '內容沒變就不重寫');
+    assert.equal(f.deployed().deploymentConfig.versionNumber, 4);
+    assert.equal(f.deployed().deploymentConfig.description, 'GitHub ' + vg);
+    assert.equal(fileOf(f, 'Index').source, INDEX_SRC);
+    if (!sameCode) assert.equal(fileOf(f, '程式碼').source, gh);
+    stats.deploy = (stats.deploy || 0) + 1;
+  }
+  for (const k of ['down', 'samever', 'latest', 'deploy']) assert.ok(stats[k] >= 20, '情況「' + k + '」測到太少：' + JSON.stringify(stats));
+});
+
+test('自我更新：首次設定（手動貼上後，程式與 GitHub 相同、部署是手動的）會直接部署', () => {
+  const v = g0 => withVer(REPO_CODE, '2026.11.20-1200');
+  const { g, f } = selfUpdateRig({ head: v().replace(/\n$/, ''), github: v(), depDesc: '' });
+  const r = g.call('selfUpdate_', {});
+  assert.equal(r.updated, true);
+  assert.equal(f.writes.filter(w => w.path === '/content').length, 0);
+  assert.equal(f.deployed().deploymentConfig.description, 'GitHub 2026.11.20-1200');
+  g.nextRequest();
+  assert.equal(g.call('selfUpdate_', {}).updated, false, '第二次執行應該是「已經是最新版」');
+});
+
+test('自我更新：抓到壞掉或不完整的檔案時完全不寫入', () => {
+  const head = withVer(REPO_CODE, '2026.11.20-1200'), gh = withVer(REPO_CODE, '2026.12.01-0900');
+  const man = JSON.parse(REPO_MAN);
+  const cases = [
+    ['GitHub 404', { github: gh, githubStatus: { 'Code_單一檔案版.gs': 404 } }, /讀不到 GitHub/],
+    ['抓到 HTML 錯誤頁', { github: '<html>rate limited</html>' }, /找不到 BACKEND_VERSION/],
+    ['程式被截斷', { github: gh.slice(0, 5000) }, /缺少/],
+    ['設定檔不是 JSON', { github: gh, manifest: '{ oops' }, /不是正確的 JSON/],
+    ['設定檔少了部署權限', { github: gh, manifest: JSON.stringify(Object.assign({}, man, { oauthScopes: man.oauthScopes.filter(x => !/deployments/.test(x)) })) }, /缺少授權範圍/],
+    ['設定檔少了 webapp', { github: gh, manifest: JSON.stringify(Object.assign({}, man, { webapp: undefined })) }, /webapp/],
+    ['Apps Script API 沒開', { github: gh, apiEnabled: false }, /usersettings/]
+  ];
+  for (const [name, o, re] of cases) {
+    const { g, f } = selfUpdateRig(Object.assign({ head }, o));
+    assert.throws(() => g.call('selfUpdate_', {}), re, name);
+    assert.equal(f.writes.length, 0, name + '：不應寫入');
+    assert.equal(fileOf(f, '程式碼').source, head, name);
+  }
+});
+
+test('自我更新：GitHub API 次數被擋（403）時改讀 raw 網址，照樣完成更新', () => {
+  const { g, f } = selfUpdateRig({ head: withVer(REPO_CODE, '2026.11.20-1200'), github: withVer(REPO_CODE, '2026.12.01-0900'), apiRateLimited: true });
+  assert.equal(g.call('selfUpdate_', {}).updated, true);
+  assert.ok(f.state.githubCalls.some(x => x.indexOf('raw:') === 0), '應該有改讀 raw');
+  assert.equal(f.deployed().deploymentConfig.description, 'GitHub 2026.12.01-0900');
+});
+
+test('自我更新：有多個網頁部署時不猜，要用 DEPLOY_ID 指定', () => {
+  const deps = () => [
+    { deploymentId: 'HEAD-ID', deploymentConfig: { scriptId: 'SID' }, entryPoints: [{ entryPointType: 'WEB_APP' }] },
+    { deploymentId: 'D1', deploymentConfig: { scriptId: 'SID', versionNumber: 3, description: '' }, entryPoints: [{ entryPointType: 'WEB_APP' }] },
+    { deploymentId: 'D2', deploymentConfig: { scriptId: 'SID', versionNumber: 2, description: '' }, entryPoints: [{ entryPointType: 'WEB_APP' }] }
+  ];
+  const base = { head: withVer(REPO_CODE, '2026.11.20-1200'), github: withVer(REPO_CODE, '2026.12.01-0900') };
+  const a = selfUpdateRig(Object.assign({ deployments: deps() }, base));
+  assert.throws(() => a.g.call('selfUpdate_', {}), /DEPLOY_ID/);
+  assert.equal(a.f.writes.length, 0);
+  const b = selfUpdateRig(Object.assign({ deployments: deps(), props: { DEPLOY_ID: 'D2' } }, base));
+  b.g.call('selfUpdate_', {});
+  assert.equal(b.f.deployed('D2').deploymentConfig.versionNumber, 4);
+  assert.equal(b.f.deployed('D1').deploymentConfig.versionNumber, 3, '沒指定的部署不能動');
+});
+
+test('退回上一版：部署指回前一個版本，專案程式不變；最早版本時會擋下', () => {
+  const { g, f } = selfUpdateRig({ head: withVer(REPO_CODE, '2026.11.20-1200'), github: withVer(REPO_CODE, '2026.12.01-0900') });
+  g.call('selfUpdate_', {});
+  const code = fileOf(f, '程式碼').source;
+  assert.equal(g.call('rollbackDeploy_').version, 3);
+  assert.equal(f.deployed().deploymentConfig.versionNumber, 3);
+  assert.equal(fileOf(f, '程式碼').source, code);
+  g.call('rollbackDeploy_'); g.call('rollbackDeploy_');
+  assert.equal(f.deployed().deploymentConfig.versionNumber, 1);
+  assert.throws(() => g.call('rollbackDeploy_'), /最早/);
+  assert.equal(JSON.parse(g.props.get('SELF_UPDATE_LOG')).length, 4);
+});
+
+test('自我更新：App 的 selfUpdate 需要正確密碼', () => {
+  const { g, f } = selfUpdateRig({ head: withVer(REPO_CODE, '2026.11.20-1200'), github: withVer(REPO_CODE, '2026.12.01-0900') });
+  assert.throws(() => g.call('api', 'wrong', 'selfUpdate', {}), /密碼錯誤/);
+  assert.equal(f.writes.length, 0);
+  assert.equal(g.call('api', 't', 'selfUpdate', {}).updated, true);
 });
 
 // ---------------------------------------------------------------- 安全

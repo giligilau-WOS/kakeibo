@@ -209,9 +209,9 @@ html[data-theme="dark"] .entry.card-mode{--soft:#3A3110;--tint:#F6D77A;--fillC:#
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.18-1800';
+const APP_VERSION = '2026.11.20-1200';
 // 這個前端需要的最低後端版本（Code_單一檔案版.gs 的 BACKEND_VERSION）。前端用到後端新功能時要跟著調高。
-const NEED_BACKEND = '2026.11.18-1800';
+const NEED_BACKEND = '2026.11.20-1200';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -2064,8 +2064,25 @@ function checkBackend(v) {
   const b = document.createElement('div');
   b.id = 'backendBar';
   b.style.cssText = 'position:fixed;left:12px;right:12px;top:calc(12px + env(safe-area-inset-top));background:#FFF4D6;color:#7A4B00;border:2px solid #C77700;border-radius:14px;padding:10px 12px;display:flex;align-items:center;gap:10px;z-index:19;font-size:13px;line-height:1.5';
-  b.innerHTML = '<span style="flex:1"><b>後端還沒部署新版本</b><br>Apps Script 目前是 ' + esc(v || '舊版（沒有版本號）') + '，這個 App 需要 ' + NEED_BACKEND + ' 以上。請到 Apps Script 貼上最新程式並「部署 → 新版本」，否則有些修正不會生效。</span><button aria-label="關閉" style="height:36px;min-width:36px;border-radius:18px;border:1px solid #C77700;background:transparent;color:#7A4B00;font-size:16px">✕</button>';
-  b.querySelector('button').onclick = function () { b.remove(); };
+  b.innerHTML = '<span style="flex:1"><b>後端還沒部署新版本</b><br>Apps Script 目前是 ' + esc(v || '舊版（沒有版本號）') + '，這個 App 需要 ' + NEED_BACKEND + ' 以上。<span id="bkMsg"></span></span>' +
+    '<span style="display:flex;flex-direction:column;gap:6px"><button data-bk="update" style="height:36px;padding:0 12px;border-radius:18px;border:none;background:#C77700;color:#fff;font-weight:700;white-space:nowrap">立即更新</button>' +
+    '<button data-bk="close" aria-label="關閉" style="height:32px;border-radius:16px;border:1px solid #C77700;background:transparent;color:#7A4B00;font-size:14px">✕</button></span>';
+  b.onclick = function (e) {
+    const x = e.target.closest('[data-bk]'); if (!x) return;
+    if (x.dataset.bk === 'close') return b.remove();
+    x.disabled = true; x.textContent = '更新中…';
+    // 後端從 GitHub main 抓最新程式、建立新版本並部署（網址不變），約需十幾秒
+    call('selfUpdate', {}).then(function (r) {
+      toast(r.message, 4000);
+      return call('version', {}).then(function (vv) { checkBackend(vv.backend); if (S.backend >= NEED_BACKEND) { clearCaches(); S.dashStale = true; loadToday(true); } });
+    }).catch(function (er) {
+      const m = String(er && er.message || er);
+      x.disabled = false; x.textContent = '立即更新';
+      $('bkMsg').innerHTML = /未知的功能/.test(m)
+        ? '<br><b>第一次需要手動設定</b>：開啟 Apps Script API、貼上最新程式與 appsscript.json，並在編輯器執行一次「更新到最新版」。之後就能用這個按鈕更新。'
+        : '<br><b>更新失敗：</b>' + esc(m);
+    });
+  };
   document.body.appendChild(b);
 }
 function checkUpdate() {
