@@ -161,6 +161,7 @@ aside#v-entry.view{padding-bottom:0}   /* 固定區要貼齊底部；下方空�
 .dock .keys{margin-top:0;gap:6px}
 .dock .keys button{height:44px}
 .dock .submit{margin-top:8px}
+body.typing #v-entry .dock{display:none}   /* 打文字時（手機鍵盤彈出）先收起數字鍵，不然會蓋住備註框 */
 .bline{display:block;width:100%;border:none;background:none;padding:0;text-align:left;font-size:12px;color:var(--tint);line-height:1.5}
 .bline .warn{color:var(--red);font-weight:700}
 .bsp{width:44px;height:44px;border-radius:12px;border:none;background:var(--card);color:var(--tint);flex-shrink:0;display:flex;align-items:center;justify-content:center}
@@ -226,7 +227,7 @@ aside#v-entry.view{padding-bottom:0}   /* 固定區要貼齊底部；下方空�
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.21-2000';
+const APP_VERSION = '2026.11.23-1000';
 // 這個前端需要的最低後端版本（Code_單一檔案版.gs 的 BACKEND_VERSION）。前端用到後端新功能時要跟著調高。
 const NEED_BACKEND = '2026.11.21-1800';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
@@ -448,11 +449,22 @@ function fitViewport() {
   document.documentElement.style.setProperty('--app-h', Math.round(h) + 'px');
   window.scrollTo(0, 0); document.documentElement.scrollTop = 0; document.body.scrollTop = 0;
   const m = document.querySelector('main'); if (m) m.scrollLeft = 0;
+  const a = document.activeElement;   // 鍵盤彈出讓畫面變矮時，正在打字的輸入框要留在看得到的地方
+  if (isEntryText(a)) a.scrollIntoView({ block: 'center' });
 }
+function isEntryText(t) { return !!(t && t.tagName === 'INPUT' && t.closest && t.closest('#v-entry')); }
 fitViewport();
 window.addEventListener('resize', fitViewport);
 window.addEventListener('orientationchange', function () { fitViewport(); setTimeout(fitViewport, 250); setTimeout(fitViewport, 700); });
 if (window.visualViewport) window.visualViewport.addEventListener('resize', function () { clearTimeout(fitViewport._t); fitViewport._t = setTimeout(fitViewport, 120); });
+// 記帳頁打文字（備註、自行輸入項目）時收起下方數字鍵，並把輸入框捲到看得到的地方
+document.addEventListener('focusin', function (e) {
+  if (!isEntryText(e.target)) return;
+  document.body.classList.add('typing');
+  const t = e.target, go = function () { if (document.activeElement === t) t.scrollIntoView({ block: 'center' }); };
+  go(); setTimeout(go, 300);   // iPhone 鍵盤動畫結束後再對一次
+});
+document.addEventListener('focusout', function (e) { if (isEntryText(e.target)) document.body.classList.remove('typing'); });
 // 鍵盤收起後讓畫面歸位（iPhone）
 document.addEventListener('focusout', function () { setTimeout(function () { window.scrollTo(0, 0); document.documentElement.scrollTop = 0; document.body.scrollTop = 0; }, 60); });
 if (window.visualViewport) window.visualViewport.addEventListener('resize', function () { if (window.visualViewport.height >= window.innerHeight - 1) window.scrollTo(0, 0); });

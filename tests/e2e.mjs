@@ -421,6 +421,7 @@ try {
   await step('記帳頁：＋備註打開輸入框，備註會送出；消費項目不再橫向捲動被切掉', async () => {
     await page.click('#v-entry [data-act="noteopen"]');
     await page.fill('#note', '測試備註');
+    await page.locator('#note').blur();   // 打字時數字鍵會收起，像手機上先按「完成」收鍵盤
     for (const k of ['5', '5']) await page.click('#v-entry .keys [data-v="' + k + '"]');
     await page.click('#v-entry .submit');
     await toastHas(/已記錄/);
@@ -465,6 +466,36 @@ try {
     assert.ok(Math.abs(gap) <= 1, '固定區和底部選單之間有 ' + gap + 'px 縫隙');
     await shot('22-預扣模式');
     await page.click('#v-entry [data-act="pay"][data-v="現金"]');
+  });
+
+  // 事故：預扣模式打開備註時，iPhone 鍵盤彈出後畫面變矮，下方固定的數字鍵把備註框蓋住
+  await step('打字時（iPhone 鍵盤彈出）：備註、自行輸入框不會被下方數字鍵蓋住；鍵盤收起後數字鍵回來', async () => {
+    const vp0 = page.viewportSize();
+    const check = async (sel) => {
+      await page.setViewportSize({ width: vp0.width, height: 380 });   // 模擬鍵盤占掉下半部
+      // 等畫面處理完縮小（有上限，逾時就照當下狀態判斷，不硬等）
+      await page.waitForFunction(s => { const r = document.querySelector(s).getBoundingClientRect(); return r.bottom <= window.innerHeight; }, sel, { timeout: 3000 }).catch(() => {});
+      return page.evaluate(s => {
+        const n = document.querySelector(s).getBoundingClientRect(), d = document.querySelector('#v-entry .dock'), dr = d.getBoundingClientRect();
+        const dockShown = getComputedStyle(d).display !== 'none' && dr.height > 0;
+        return { focused: document.activeElement === document.querySelector(s), top: n.top, bottom: n.bottom, h: window.innerHeight, covered: dockShown && n.bottom > dr.top + 0.5 };
+      }, sel);
+    };
+    for (const mode of ['預扣', '現金']) {
+      await page.click('#v-entry [data-act="pay"][data-v="' + mode + '"]');
+      if (mode === '預扣') await page.locator('#v-entry .ppgrid').waitFor();
+      if (await page.locator('#note').count() === 0) await page.click('#v-entry [data-act="noteopen"]');
+      await page.focus('#note');
+      const m = await check('#note');
+      if (mode === '預扣') await shot('23-預扣備註打字');
+      assert.ok(m.focused, mode + '：備註框要有焦點');
+      assert.ok(!m.covered, mode + '：備註框被數字鍵蓋住 ' + JSON.stringify(m));
+      assert.ok(m.top >= 0 && m.bottom <= m.h + 0.5, mode + '：備註框要在畫面內 ' + JSON.stringify(m));
+      await page.locator('#note').blur();
+      await page.setViewportSize(vp0);
+      assert.ok(await page.locator('#v-entry .dock .submit').isVisible(), mode + '：鍵盤收起後「記一筆」要回來');
+    }
+    await page.fill('#note', ''); await page.locator('#note').blur();
   });
 
   await step('離線暫存後按「復原」：從佇列拿掉，恢復連線後也不會上傳', async () => {
