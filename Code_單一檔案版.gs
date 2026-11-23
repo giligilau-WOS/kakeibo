@@ -28,7 +28,7 @@ const CONFIG = {
 
 // 後端版本：每次修改這個檔案都要更新（tools/check.mjs 會檢查）。
 // 前端 index.html 的 NEED_BACKEND 若比這個新，App 會提醒「後端還沒部署新版本」。
-const BACKEND_VERSION = '2026.11.21-1800';
+const BACKEND_VERSION = '2026.11.23-1800';
 
 // 各年度檔案的差異（儲存格位置）
 const PROFILE = {
@@ -177,7 +177,7 @@ function api(k, method, args) {
 // ---- 防止重送重複記帳：前端每筆記帳／繳費都帶一個請求編號 rid ----
 // 情境：試算表已經寫入，但手機沒收到回應（逾時），App 放進離線佇列再送一次。
 // 同一個 rid 第二次送來時直接略過，不再寫入。最近 200 個 rid 存在 Script Properties。
-const RID_METHODS = { add: true, payPrepaid: true, saveSub: true, undoSub: true, undoAdd: true };
+const RID_METHODS = { add: true, payPrepaid: true, saveSub: true, undoSub: true, undoAdd: true, lifePay: true };
 const RID_KEEP = 200;
 function ridMap_() { try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('RIDS') || '{}'); } catch (e) { return {}; } }
 function ridSave_(map) {
@@ -244,6 +244,9 @@ function route_(method, args) {
     case 'envelopes': return getEnvelopes_(args.y, args.m);
     case 'borrow': return borrowEnvelope_(args);
     case 'repay': return repayBorrow_(args);
+    case 'lifePay': return lifePay_(args);
+    case 'lifeSetup': return setupLife_(+args.y, args.monthly);
+    case 'lifeUndo': return undoLife_(+args.y);
     case 'ecard': return { balance: ecardBalance_(), state: ecardState_() };
     case 'setEcard': return setEcard_(args);
     case 'tax': return getTax_(args.y);
@@ -1109,6 +1112,7 @@ function deleteLog_(y, row) {
   if (row < 2 || row > sh.getLastRow()) throw new Error('紀錄不存在');
   const r = readLog_(+y).filter(function (x) { return x.row === row; })[0];
   if (r && r.type === '繳費' && r.data) replayPrepaid_(+y, sh, r);   // 還原攤平表
+  if (r && r.type === LIFE_LOG && LIFE[+y]) { const L = LIFE[+y]; addBorrowCell_(+y, r.m, { sheet: L.sheet, row: L.payRow, col0: L.col0 }, -r.amount); }   // 還原生活備用支付
   sh.deleteRow(row);
   bumpVer_();
   return { ok: true, message: '已刪除紀錄' };
@@ -1626,9 +1630,9 @@ function ensureSchema2_(y) {
       const c = L.charAt(i), mon = (i + 1);
       if (yf.getRange(c + '66').getValue() === '') yf.getRange(c + '66').setValue(0);
       if (tb.getRange(c + '14').getValue() === '') tb.getRange(c + '14').setValue(0);
-      yf.getRange(c + '5').setFormula('=SUM(' + c + '10:' + c + '33)+' + c + '59+' + c + '61+' + c + '66');
+      yf.getRange(c + '5').setFormula('=SUM(' + c + '10:' + c + '33)+' + c + '59+' + c + '61+' + c + '66+' + c + '67');
       tb.getRange(c + '4').setFormula('=SUM(' + c + '7:' + c + '8)+' + c + '14');
-      inc.getRange(c + '8').setFormula("='" + y + '年' + mon + "月'!B3+'永豐銀行準備金定期定額'!" + c + "66+'台銀帳戶_預扣及攤平'!" + c + '14');
+      inc.getRange(c + '8').setFormula("='" + y + '年' + mon + "月'!B3+'永豐銀行準備金定期定額'!" + c + "66+'永豐銀行準備金定期定額'!" + c + "67+'台銀帳戶_預扣及攤平'!" + c + '14');
     }
     inc.getRange('A8').setValue('其他(永豐回補：補當月缺額，自動＋信封調用)');
   }
@@ -1667,6 +1671,15 @@ function setEcard_(a) {
 }
 
 // ===== 21. 預扣信封（每個攤平項目的水位）=====
+// 生活備用信封（2027 起）：不規則的必要支出（醫療、修繕、家具家用、紅包禮金）每月先存進永豐，
+// 用到時「從生活備用支付」到日常，不用歸還。放在永豐表最下方兩列（不插入列，現有列號都不動）；
+// 每月存入額由「其他」預算撥出：月表 G7 扣掉同額，所以永豐每月回補日常的金額不變。
+const LIFE = {
+  2027: { sheet: '永豐銀行準備金定期定額', payRow: 67, allocRow: 68, col0: 2, cutCol: 7, monthly: 4000,
+          payLabel: '【生活備用】實際支付到日常戶（醫療、修繕、家用、禮金；App 自動寫入）',
+          allocLabel: '【生活備用】每月存入（由「其他」預算撥出）' }
+};
+const LIFE_LOG = '生活備用';
 const ENV = {
   // attr：不屬於任何項目的支出列，歸到指定信封（列號 → 信封列號）
   // lines：在帳戶總覽單獨列出的進出（borrow:true 表示也是 App 調用寫入的列）
@@ -1677,10 +1690,12 @@ const ENV = {
   2027: [{ acct: '台銀', sheet: '台銀帳戶_預扣及攤平', payCol: 2, allocCol: 2, allocOffset: 4, balRow: 5, borrowRow: 14, rows: [7, 8],
            attr: {}, lines: [{ row: 14, label: '信封調用（借出／歸還）', borrow: true }], opening: { row: 2, col: 2, label: '電費週轉金（期初）' } },
          { acct: '永豐', sheet: '永豐銀行準備金定期定額', payCol: 2, allocCol: 2, allocOffset: 25, balRow: 65, borrowRow: 66,
-           rows: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32],
+           rows: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 67],
+           allocRows: { 67: 68 }, optionalRows: [67],   // 生活備用（見 LIFE）：預存在第 68 列；還沒建立時略過
            attr: {}, lines: [{ row: 61, label: '旅遊專款撥出' }, { row: 66, label: '信封調用（借出／歸還）', borrow: true }], carryIn: true }]
 };
 function envName_(y, acct, row) {
+  if (LIFE[y] && acct === '永豐' && row === LIFE[y].payRow) return '生活備用';
   const it = (PREPAID[y] || []).reduce(function (a, g) { return a.concat(g.items.map(function (x) { return { acct: g.acct, row: x[0], name: x[1] }; })); }, [])
     .filter(function (x) { return x.acct === acct && x.row === row; })[0];
   return it ? it.name : '';
@@ -1707,12 +1722,15 @@ function envRaw_(y) {
       const sh = ss_(y).getSheetByName(a.sheet), v = sh.getRange(1, 1, 70, 30).getValues();
       const n = function (r, c) { return Math.round(num_((v[r - 1] || [])[c - 1])); };   // 逐月取整數，和表上顯示一致
       const row12 = function (r) { const p = []; for (let i = 0; i < 12; i++) p.push(n(r, a.payCol + i)); return p; };
-      const items = a.rows.map(function (row) {
-        const alloc = []; for (let i = 0; i < 12; i++) alloc.push(n(row + a.allocOffset, a.allocCol + i));
+      const rows = a.rows.filter(function (row) { return (a.optionalRows || []).indexOf(row) < 0 || String((v[row - 1] || [])[0] || '') !== ''; });
+      const items = rows.map(function (row) {
+        const ar = (a.allocRows && a.allocRows[row]) || row + a.allocOffset;
+        const alloc = []; for (let i = 0; i < 12; i++) alloc.push(n(ar, a.allocCol + i));
         const attr = Object.keys(a.attr || {}).filter(function (k) { return a.attr[k] === row; }).map(function (k) {
           return { name: String(v[+k - 1][0] || '').replace(/（.*$/, ''), pay: row12(+k) };
         });
-        return { key: a.acct + ':' + row, acct: a.acct, row: row, name: envName_(y, a.acct, row) || String(v[row - 1][0] || ''), pay: row12(row), alloc: alloc, attr: attr };
+        return { key: a.acct + ':' + row, acct: a.acct, row: row, name: envName_(y, a.acct, row) || String(v[row - 1][0] || ''), pay: row12(row), alloc: alloc, attr: attr,
+                 life: !!(LIFE[y] && a.sheet === LIFE[y].sheet && row === LIFE[y].payRow) };
       });
       const lines = (a.lines || []).map(function (L) { return { row: L.row, label: L.label, borrow: !!L.borrow, pay: row12(L.row) }; });
       out.push({ acct: a.acct, sheet: a.sheet, items: items, lines: lines, dep: a.depRow ? (function () { const p = []; for (let i = 0; i < 12; i++) p.push(n(a.depRow, a.allocCol + i)); return p; })() : null, bal: row12(a.balRow), opening: a.opening ? n(a.opening.row, a.opening.col) : 0,
@@ -1746,7 +1764,7 @@ function getEnvelopes_(y, m) {
       if (pend > 0) next = { m: m, amount: pend };
       for (let k = m; k < 12; k++) { run += it.alloc[k] - out[k]; if (run < low) low = run; if (!next && it.pay[k] > 0) next = { m: k + 1, amount: it.pay[k] }; }
       const attrNote = it.attr.map(function (x) { const t = sumTo(x.pay, m); return t ? x.name + ' $' + fmt_(t) : ''; }).filter(Boolean);
-      return { key: it.key, acct: it.acct, name: it.name, carry: c, allocYear: sumTo(it.alloc, 12), allocYTD: sumTo(it.alloc, m),
+      return { key: it.key, acct: it.acct, name: it.name, life: it.life, carry: c, allocYear: sumTo(it.alloc, 12), allocYTD: sumTo(it.alloc, m),
                paidYTD: sumTo(out, m), attrNote: attrNote, pending: pend, borrowed: borrowed, balance: balance, yearEnd: yearEnd,
                nextAlloc: m < 12 ? it.alloc[m] : 0, nextPay: m < 12 ? out[m] : 0, safe: Math.max(0, Math.min(low, balance)), next: next };
     });
@@ -1775,7 +1793,11 @@ function getEnvelopes_(y, m) {
              opening: a.opening, openingLabel: a.openingLabel,
              carryTotal: items.reduce(function (s, x) { return s + x.carry; }, 0), carryActual: a.carryIn ? a.carryActual : null };
   });
-  return { y: y, m: m, accounts: accounts, borrows: borrows };
+  const life = LIFE[y] ? {
+    ready: lifeReady_(y), monthly: LIFE[y].monthly,
+    pays: readLog_(y).filter(function (l) { return l.type === LIFE_LOG; }).map(function (l) { return { row: l.row, date: l.date, m: l.m, amount: l.amount, cat: l.note, reason: (function () { try { return JSON.parse(l.data || '{}').reason || ''; } catch (e) { return ''; } })() }; })
+  } : null;
+  return { y: y, m: m, accounts: accounts, borrows: borrows, life: life };
 }
 // ---- 調用與歸還 ----
 function borrowRowFor_(y, key) {
@@ -1787,6 +1809,18 @@ function addBorrowCell_(y, m, cfg, delta) {
   const r = ss_(y).getSheetByName(cfg.sheet).getRange(cfg.row, cfg.col0 + m - 1);
   r.setValue(num_(r.getValue()) + delta);
 }
+// 把錢從預扣帳戶撥到日常戶（寫進 cfg 指定的那一格，當月加 amt）。
+// 試算表的預算公式會在可支配現金不足時自動刪減科目；撥進來的錢有一部分會先被公式「補回」那些被刪的科目。
+// 記下每個科目被補回多少（deltas），App 顯示時再把它們移回使用者選的科目，讓選的科目剛好多出撥入金額。
+function drawToDaily_(y, m, cfg, amt) {
+  const b0 = readTopRaw_(y, m);
+  addBorrowCell_(y, m, cfg, amt);
+  SpreadsheetApp.flush(); bumpVer_();
+  const b1 = readTopRaw_(y, m), deltas = {};
+  let absorbed = 0;
+  CATS.forEach(function (c, i) { const d = Math.round(b1.cats[i].budget - b0.cats[i].budget); if (d) { deltas[c] = d; absorbed += d; } });
+  return { deltas: deltas, absorbed: absorbed };
+}
 function borrowEnvelope_(a) {
   const t = parseDate_(todayStr_()), y = t.y, m = t.m, amt = Math.round(num_(a.amount));
   if (!amt || amt <= 0) throw new Error('請輸入調用金額');
@@ -1795,24 +1829,17 @@ function borrowEnvelope_(a) {
   if (!it) throw new Error('找不到這個信封');
   if (amt > it.safe && !a.force) throw new Error('超過可安全調用的 $' + fmt_(it.safe) + '，借出後 ' + (it.next ? it.next.m + ' 月繳費時會不夠' : '年底前會不夠'));
   const cfg = borrowRowFor_(y, a.key);
-  // 試算表的預算公式會在可支配現金不足時自動刪減科目；借進來的錢有一部分會先被公式「補回」那些被刪的科目。
-  // 記下每個科目被補回多少（deltas），App 顯示時再把它們移回使用者選的科目，讓選的科目剛好多出借入金額。
-  const b0 = readTopRaw_(y, m);
-  addBorrowCell_(y, m, cfg, amt);
-  SpreadsheetApp.flush(); bumpVer_();
-  const b1 = readTopRaw_(y, m), deltas = {};
-  let absorbed = 0;
-  CATS.forEach(function (c, i) { const d = Math.round(b1.cats[i].budget - b0.cats[i].budget); if (d) { deltas[c] = d; absorbed += d; } });
+  const dr = drawToDaily_(y, m, cfg, amt);
   const cat = CATS.indexOf(a.cat) >= 0 ? a.cat : '食物';
   appendLog_(y, { type: '調用', date: todayStr_(), m: m, name: it.name, amount: amt, acct: cfg.acct, target: a.key, note: cat,
-                  data: JSON.stringify({ absorbed: absorbed, extra: amt - absorbed, cat: cat, reason: a.note || '', deltas: deltas }) });
+                  data: JSON.stringify({ absorbed: dr.absorbed, extra: amt - dr.absorbed, cat: cat, reason: a.note || '', deltas: dr.deltas }) });
   return { ok: true, message: '已從「' + it.name + '」調用 $' + fmt_(amt) + ' 到日常，' + cat + '預算 +$' + fmt_(amt) + '；下個月發薪日提醒歸還' };
 }
 // 調用在 App 層對各科目預算的調整：adj＝每個科目要加減的金額，extra＝試算表總預算以外多出的部分。
 // 新紀錄有 deltas：把公式自動補回的金額從原科目扣掉，借入金額全部加到選的科目。
 // 舊紀錄（沒有 deltas）維持舊算法：只把 extra 加到選的科目。
 function borrowExtra_(y, m) {
-  return readLog_(y).filter(function (l) { return l.type === '調用' && l.m === m; }).map(function (l) {
+  return readLog_(y).filter(function (l) { return (l.type === '調用' || l.type === LIFE_LOG) && l.m === m; }).map(function (l) {
     let d = {}; try { d = JSON.parse(l.data || '{}'); } catch (e) {}
     const cat = d.cat || l.note, adj = {};
     if (d.deltas && typeof d.deltas === 'object') {
@@ -1840,6 +1867,87 @@ function repayBorrow_(a) {
   SpreadsheetApp.flush(); bumpVer_();
   appendLog_(y, { type: '調用歸還', date: todayStr_(), m: m, name: b.name, amount: amt, acct: cfg.acct, target: b.key, data: b.id });
   return { ok: true, message: '已記錄歸還「' + b.name + '」$' + fmt_(amt) + '（從日常戶轉回' + cfg.acct + '）' };
+}
+
+// ---- 生活備用信封 ----
+function lifeReady_(y) {
+  const L = LIFE[y]; if (!L || !ss_(y)) return false;
+  const sh = ss_(y).getSheetByName(L.sheet);
+  return !!sh && String(sh.getRange(L.payRow, 1).getValue()) === L.payLabel;
+}
+// 建立會改到的儲存格（每一格改之前的內容都存在 Script Properties「LIFE_BAK_年度」，還原時照原樣寫回）：
+//   永豐表 A67:N68（新增兩列；原本必須是空白）
+//   永豐表 B5:M5「本月實際扣繳支出」公式 ＋第 67 列
+//   收入表 B8:M8「永豐回補」公式 ＋永豐第 67 列（支付到日常的錢算日常收入）
+//   總表 C7:N7「永豐年度大額鎖入」＋永豐第 68 列（每月多存進永豐）
+//   各月表 G7「其他」預算 −永豐第 68 列（從其他撥出，總預算與回補不變）
+function setupLife_(y, monthly) {
+  y = +y;
+  const L = LIFE[y]; if (!L) throw new Error(y + ' 年沒有生活備用信封的設定');
+  const s = ss_(y); if (!s) throw new Error(y + ' 年的試算表尚未設定');
+  if (lifeReady_(y)) return { ok: true, already: true, message: y + ' 年的生活備用信封已經建立過了' };
+  const amt = Math.round(num_(monthly == null || monthly === '' ? L.monthly : monthly));
+  if (!(amt > 0)) throw new Error('每月存入金額要大於 0');
+  const yf = s.getSheetByName(L.sheet), inc = s.getSheetByName('收入'), top = s.getSheetByName('總表');
+  if (!yf || !inc || !top) throw new Error('找不到永豐、收入或總表工作表，沒有做任何修改');
+  const COLS = 'BCDEFGHIJKLM', TOPC = 'CDEFGHIJKLMN', Q = "'" + L.sheet + "'!";
+  for (const r of [L.payRow, L.allocRow]) {
+    const v = yf.getRange(r, 1, 1, 14).getValues()[0];
+    if (v.some(function (x) { return x !== '' && x !== null; })) throw new Error('永豐表第 ' + r + ' 列不是空白，為了不蓋掉資料，沒有做任何修改');
+  }
+  const months = [];
+  for (let m = 1; m <= 12; m++) { const sh = s.getSheetByName(y + '年' + m + '月'); if (!sh) throw new Error('找不到「' + y + '年' + m + '月」工作表，沒有做任何修改'); months.push(sh); }
+  const bak = [];
+  const keep = function (sheet, a1) { const r = s.getSheetByName(sheet).getRange(a1); bak.push([sheet, a1, r.getFormula() || '', r.getFormula() ? '' : r.getValue()]); return r; };
+  const plus = function (r, add) { const f = r.getFormula(); const base = f ? f : '=' + (num_(r.getValue()) || 0); return base + add; };
+  // 先全部備份，再寫入
+  for (const r of [L.payRow, L.allocRow]) for (let c = 1; c <= 14; c++) keep(L.sheet, 'ABCDEFGHIJKLMN'.charAt(c - 1) + r);
+  const plan = [];
+  for (let i = 0; i < 12; i++) {
+    const c = COLS.charAt(i), tc = TOPC.charAt(i);
+    plan.push([keep(L.sheet, c + '5'), '+' + c + L.payRow, c + L.payRow]);
+    plan.push([keep('收入', c + '8'), '+' + Q + c + L.payRow, Q + c + L.payRow]);
+    plan.push([keep('總表', tc + '7'), '+' + Q + c + L.allocRow, Q + c + L.allocRow]);
+    plan.push([keep(y + '年' + (i + 1) + '月', 'G' + 7), '-' + Q + c + L.allocRow, Q + c + L.allocRow]);
+  }
+  PropertiesService.getScriptProperties().setProperty('LIFE_BAK_' + y, JSON.stringify(bak));
+  yf.getRange(L.payRow, 1).setValue(L.payLabel); yf.getRange(L.allocRow, 1).setValue(L.allocLabel);
+  for (let i = 0; i < 12; i++) { yf.getRange(L.payRow, 2 + i).setValue(0); yf.getRange(L.allocRow, 2 + i).setValue(amt); }
+  yf.getRange(L.payRow, 14).setFormula('=SUM(B' + L.payRow + ':M' + L.payRow + ')');
+  yf.getRange(L.allocRow, 14).setFormula('=SUM(B' + L.allocRow + ':M' + L.allocRow + ')');
+  plan.forEach(function (p) { if (p[0].getFormula().indexOf(p[2]) < 0) p[0].setFormula(plus(p[0], p[1])); });
+  SpreadsheetApp.flush(); bumpVer_();
+  return { ok: true, message: '已建立 ' + y + ' 年生活備用信封：每月存入 $' + fmt_(amt) + '，同額從各月「其他」預算撥出。要取消可以在 App 按「取消生活備用」或執行「還原生活備用信封」。' };
+}
+function undoLife_(y) {
+  y = +y;
+  const L = LIFE[y]; if (!L || !ss_(y)) throw new Error(y + ' 年沒有生活備用信封');
+  const used = readLog_(y).filter(function (l) { return l.type === LIFE_LOG; }).length;
+  if (used) throw new Error('已經有 ' + used + ' 筆生活備用支付，請先在信封頁刪除那些紀錄再取消');
+  const props = PropertiesService.getScriptProperties(), raw = props.getProperty('LIFE_BAK_' + y);
+  if (!raw) throw new Error('找不到建立前的備份，沒有做任何修改');
+  const s = ss_(y);
+  JSON.parse(raw).forEach(function (b) { const r = s.getSheetByName(b[0]).getRange(b[1]); if (b[2]) r.setFormula(b[2]); else r.setValue(b[3]); });
+  props.deleteProperty('LIFE_BAK_' + y);
+  SpreadsheetApp.flush(); bumpVer_();
+  return { ok: true, message: '已取消 ' + y + ' 年生活備用信封，相關儲存格都還原成建立前的樣子' };
+}
+function 建立生活備用信封() { Logger.log(setupLife_(2027).message); }
+function 還原生活備用信封() { Logger.log(undoLife_(2027).message); }
+function lifePay_(a) {
+  const t = parseDate_(todayStr_()), y = t.y, m = t.m, amt = Math.round(num_(a.amount));
+  const L = LIFE[y];
+  if (!L || !lifeReady_(y)) throw new Error(y + ' 年還沒有建立生活備用信封');
+  if (!amt || amt <= 0) throw new Error('請輸入金額');
+  const it = getEnvelopes_(y, m).accounts.reduce(function (s, x) { return s.concat(x.items); }, []).filter(function (x) { return x.life; })[0];
+  if (!it) throw new Error('找不到生活備用信封');
+  if (amt > Math.max(0, it.balance) && !a.force) throw new Error('生活備用目前只有 $' + fmt_(Math.max(0, it.balance)) + '，超過的部分會由永豐帳戶的緩衝底金墊付');
+  const cfg = { sheet: L.sheet, row: L.payRow, col0: L.col0 };
+  const dr = drawToDaily_(y, m, cfg, amt);
+  const cat = CATS.indexOf(a.cat) >= 0 ? a.cat : '其他';
+  appendLog_(y, { type: LIFE_LOG, date: todayStr_(), m: m, name: '生活備用', amount: amt, acct: '永豐', target: it.key, note: cat,
+                  data: JSON.stringify({ absorbed: dr.absorbed, extra: amt - dr.absorbed, cat: cat, reason: a.note || '', deltas: dr.deltas }) });
+  return { ok: true, message: '已從生活備用支付 $' + fmt_(amt) + '，' + cat + '預算 +$' + fmt_(amt) + '（不用歸還）。記得從永豐轉 $' + fmt_(amt) + ' 到郵局日常戶。' };
 }
 
 // ===== 22. 從 GitHub 自我更新（取代手動貼上＋部署）=====

@@ -117,3 +117,38 @@ export function buildCardSheets(g) {
   for (let m = 1; m <= 12; m++) b.set(r1 + 2, 1 + m, 10000 + m);   // 帳單總額：用來確認插入列後仍讀得到
   return { a, b };
 }
+
+// 2027 年假試算表（生活備用信封用）：版面照真實試算表（永豐表第 10～32 列支出、+25 列預存、
+// 第 5 列支出公式、第 66 列調用；收入第 8 列、總表第 7 列、各月表 G7「其他」預算），金額全部虛構。
+// 「其他」預算一半月份是數字、一半是公式（真實的 2 月是公式）。月表摘要只放 App 會讀的格子，不模擬公式計算。
+export function buildWorkbook2027(g, R) {
+  const book = g.book(2027), COLS = 'BCDEFGHIJKLM', TOPC = 'CDEFGHIJKLMN';
+  const yf = book.sheet('永豐銀行準備金定期定額'), inc = book.sheet('收入'), top = book.sheet('總表');
+  const P = g.get('PREPAID')[2027][1];
+  P.items.forEach(([row, name, months]) => {
+    const amt = R.int(5, 60) * 100;
+    yf.set(row, 1, name);
+    for (let m = 1; m <= 12; m++) {
+      if (months.indexOf(m) >= 0) yf.set(row, 1 + m, amt);
+      yf.set(row + 25, 1 + m, Math.ceil(amt * months.length / 12 / 100) * 100 + 200);
+    }
+  });
+  yf.set(66, 1, '【調用】信封臨時調用到日常戶');
+  for (let i = 0; i < 12; i++) {
+    const c = COLS[i], tc = TOPC[i];
+    yf.set(66, 2 + i, 0).set(65, 2 + i, 50000).set(6, 2 + i, 80000);
+    yf.put(5, 2 + i, { v: 0, f: '=SUM(' + c + '10:' + c + '33)+' + c + '59+' + c + '61+' + c + '66' });
+    inc.put(8, 2 + i, { v: 0, f: "='2027年" + (i + 1) + "月'!B3+'永豐銀行準備金定期定額'!" + c + "66+'台銀帳戶_預扣及攤平'!" + c + '14' });
+    if (R.bool()) top.set(7, 3 + i, R.int(150, 250) * 100); else top.put(7, 3 + i, { v: 0, f: '=564+MAX(0,56505-' + "'選單'!H12)" });
+    const sh = book.sheet('2027年' + (i + 1) + '月');
+    const budgets = [R.int(70, 95) * 100, R.int(90, 130) * 100, R.int(0, 8) * 100, R.int(20, 40) * 100, R.int(10, 40) * 100, R.int(50, 90) * 100];
+    budgets.forEach((b, k) => sh.set(7, 2 + k, b).set(8, 2 + k, b));
+    if (R.bool()) sh.put(7, 7, { v: budgets[5], f: "=2000+'過年花費'!G11" });
+    sh.set(8, 8, budgets.reduce((a, b) => a + b, 0)).set(12, 8, 1000).set(4, 2, 30000);
+    top.set(1, 1, '總表');
+  }
+  const tw = book.sheet('台銀帳戶_預扣及攤平');
+  for (let m = 1; m <= 12; m++) { tw.set(7, 1 + m, 25318); tw.set(11, 1 + m, 25318); tw.set(5, 1 + m, 3000); tw.set(14, 1 + m, 0); }
+  g.props.set('SCHEMA2_2027', '2026-11-01 00:00');
+  return { book, yf, inc, top, month: m => book.getSheetByName('2027年' + m + '月') };
+}

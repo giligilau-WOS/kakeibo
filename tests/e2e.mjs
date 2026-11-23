@@ -9,10 +9,10 @@ import { mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import { loadGas } from './helpers/gas.mjs';
+import { loadGas, rng } from './helpers/gas.mjs';
 import { fakeGoogle, withVer } from './helpers/fake-script-api.mjs';
 import { readFileSync } from 'node:fs';
-import { buildWorkbook2026 } from './fixtures/workbook.mjs';
+import { buildWorkbook2026, buildWorkbook2027 } from './fixtures/workbook.mjs';
 
 // 用環境裡已安裝的 Playwright（全域安裝，ESM import 找不到，所以用 require）
 const { chromium } = createRequire(import.meta.url)('playwright');
@@ -511,6 +511,58 @@ try {
     assert.equal(await page.evaluate(() => S.queue.length), 0);
     assert.equal(calls.filter(c => c.method === 'add' && !c.offline).length, nAdd, '不能上傳');
     assert.equal(ledger(), before);
+  });
+
+  await step('生活備用（2027/3）：建立信封 → 支付 1,500 → 刪除紀錄還原 → 取消信封，試算表回到原樣', async () => {
+    g.setNow('2027-03-10T10:00:00+08:00');
+    const wb = buildWorkbook2027(g, rng(7));
+    const snap27 = () => JSON.stringify([...wb.book.sheets].filter(([n]) => n !== 'App紀錄').map(([n, sh]) => [n, [...sh.cells].sort()]));
+    const s0 = snap27();
+    // 另開一個沒有快取的瀏覽器環境：日期以手機時鐘（2027/3/10）為準
+    const ctx3 = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+    await ctx3.addInitScript(u => { try { localStorage.setItem('kakeiboCfg', JSON.stringify({ url: u, k: 'test-token' })); } catch (e) {} }, GAS_URL);
+    const p3 = await ctx3.newPage();
+    try {
+      await p3.clock.setFixedTime(new Date('2027-03-10T10:00:00+08:00'));
+      p3.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) consoleErrors.push(m.text()); });
+      p3.on('pageerror', e => consoleErrors.push('pageerror: ' + e.message));
+      p3.on('dialog', d => d.accept());
+      await p3.route('**/*', handler);
+      const toast3 = (re, ms = 5000) => p3.waitForFunction(r => new RegExp(r).test(document.getElementById('toast').textContent) && document.getElementById('toast').style.display !== 'none', re.source, { timeout: ms });
+      await p3.goto(BASE + '/index.html');
+      // 假的 2027 試算表沒有月報資料，資產頁讀不到；從資產頁點進信封頁已在 2026 的步驟測過，這裡直接開信封頁
+      await p3.waitForFunction(() => typeof openEnv === 'function');
+      await p3.evaluate(() => openEnv());
+      await p3.locator('#v-env [data-ev="lifesetup"]').waitFor();
+      await p3.screenshot({ path: join(OUT, '30-生活備用-建立前.png') });
+      await p3.click('#v-env [data-ev="lifesetup"]');
+      await toast3(/已建立 2027 年生活備用信封/);
+      await p3.locator('#v-env [data-ev="lifepay"]').waitFor();
+      g.nextRequest(); assert.equal(g.call('lifeReady_', 2027), true);
+      await p3.click('#v-env [data-ev="lifepay"]');
+      await p3.fill('#lpAmt', '1500');
+      await p3.fill('#lpNote', '飲水機修理');
+      await p3.screenshot({ path: join(OUT, '31-生活備用-支付.png') });
+      await p3.click('[data-lp="ok"]');
+      await toast3(/已從生活備用支付 \$1,500/);
+      await p3.locator('#v-env [data-ev="lifedel"]').waitFor();
+      assert.equal(Number(wb.yf.val(67, 4)), 1500, '永豐第 67 列 3 月');
+      const pay = lastCall('lifePay');
+      assert.equal(pay.args.amount, 1500); assert.equal(pay.args.cat, '其他'); assert.equal(pay.args.note, '飲水機修理');
+      await p3.locator('#v-env [data-ev="lifedel"]').scrollIntoViewIfNeeded();
+      await p3.screenshot({ path: join(OUT, '32-生活備用-支付後.png') });
+      await p3.click('#v-env [data-ev="lifedel"]');
+      await toast3(/已刪除紀錄/);
+      await p3.locator('#v-env [data-ev="lifeundo"]').waitFor();
+      assert.equal(Number(wb.yf.val(67, 4)), 0);
+      await p3.click('#v-env [data-ev="lifeundo"]');
+      await toast3(/已取消 2027 年生活備用信封/);
+      await p3.locator('#v-env [data-ev="lifesetup"]').waitFor();
+      assert.equal(snap27(), s0, '取消後 2027 試算表要回到原樣');
+    } finally {
+      await ctx3.close();
+      g.setNow('2026-11-18T10:00:00+08:00');
+    }
   });
 
   await step('沒有任何對外連線、console 沒有錯誤', async () => {

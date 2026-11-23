@@ -227,9 +227,9 @@ body.typing #v-entry .dock{display:none}   /* 打文字時（手機鍵盤彈出�
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.23-1000';
+const APP_VERSION = '2026.11.23-1800';
 // 這個前端需要的最低後端版本（Code_單一檔案版.gs 的 BACKEND_VERSION）。前端用到後端新功能時要跟著調高。
-const NEED_BACKEND = '2026.11.21-1800';
+const NEED_BACKEND = '2026.11.23-1800';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -2081,6 +2081,12 @@ function renderEnv() {
         '<button class="chip" data-ev="repay" data-id="' + esc(b.id) + '" style="height:34px;font-size:12px">已歸還</button></div>';
     }).join('') + '<div class="sub" style="font-size:11px;margin-top:6px">按「已歸還」會在試算表記一筆「日常戶 → 預扣帳戶」，並從當月可花的錢扣掉。</div></div>';
   }
+  if (d.life && !d.life.ready) {
+    h += '<div class="card" style="border:1px solid var(--green)"><b style="font-size:15px">生活備用信封（還沒建立）</b>' +
+      '<div class="sub" style="font-size:13px;line-height:1.6;margin-top:4px">醫療、修繕、家具家用、紅包禮金這類不規則但必要的支出，每月先存 <b>$' + fmt(d.life.monthly) + '</b> 到永豐；用到時從信封支付到日常，<b>不用歸還</b>。</div>' +
+      '<div class="sub" style="font-size:12px;line-height:1.6;margin-top:6px">建立時會改試算表：永豐表最下方新增兩列；總表每月永豐存入 +$' + fmt(d.life.monthly) + '；各月「其他」預算 −$' + fmt(d.life.monthly) + '（總預算和永豐回補都不變）。改之前的內容會備份，還沒有支付紀錄前都可以取消。</div>' +
+      '<button class="chip" data-ev="lifesetup" style="height:36px;margin-top:8px;border-color:var(--green);color:var(--green)">建立 ' + d.y + ' 年生活備用信封</button></div>';
+  }
   d.accounts.forEach(function (a) {
     const ln = function (label, now, ye, opt) {
       opt = opt || {};
@@ -2107,13 +2113,51 @@ function renderEnv() {
         (it.attrNote.length ? '<br>（含 ' + it.attrNote.map(esc).join('、') + '）' : '') +
         (it.pending ? '<br>本月待繳 <b>$' + fmt(it.pending) + '</b>' : '') + (it.borrowed ? '<br><span class="fast">已借出 $' + fmt(it.borrowed) + '</span>' : '') +
         '<br>年底預估 <b class="' + (it.yearEnd < 0 ? 'over' : '') + '">' + money(it.yearEnd) + '</b>' +
-        '<br>下次繳費：' + (it.next ? it.next.m + ' 月 $' + fmt(it.next.amount) : '今年沒有了') + (low ? '<br><span class="over">' + (it.yearEnd < 0 ? '透支，由緩衝底金沖銷' : '暫時超前支付，年底會回正') + '</span>' : '') + '</div>' +
+        (it.life ? '<br>醫療、修繕、家具家用、紅包禮金' : '<br>下次繳費：' + (it.next ? it.next.m + ' 月 $' + fmt(it.next.amount) : '今年沒有了')) + (low ? '<br><span class="over">' + (it.yearEnd < 0 ? '透支，由緩衝底金沖銷' : '暫時超前支付，年底會回正') + '</span>' : '') + '</div>' +
+        (it.life ? lifeFoot(d, it, isNow) :
         '<div class="row" style="margin-top:8px"><span style="font-size:13px">可調用 <b class="' + (it.safe ? 'ok' : 'done') + '">$' + fmt(it.safe) + '</b></span>' +
-        (isNow && it.safe > 0 ? '<button class="chip" data-ev="borrow" data-k="' + esc(it.key) + '" style="height:34px;font-size:12px;border-color:var(--green);color:var(--green)">調用到日常</button>' : '') + '</div></div>';
+        (isNow && it.safe > 0 ? '<button class="chip" data-ev="borrow" data-k="' + esc(it.key) + '" style="height:34px;font-size:12px;border-color:var(--green);color:var(--green)">調用到日常</button>' : '') + '</div>') + '</div>';
     }).join('') + '</div>';
   });
   h += '<div class="sub" style="font-size:11px;line-height:1.6;margin:12px 0">信封餘額＝1 月到本月的預存 − 實支（本月應繳視為已繳）；年底預估再加上 12 月為止的預存與實支。2026 年 5 月「投資轉出」算在綜所稅、10 月「信用卡帳單代繳」算在小布丁夏令營。「可調用」＝借出後直到年底都不會透支的金額。</div>';
   el.innerHTML = h;
+}
+// 生活備用：支付按鈕、今年的支付紀錄（可刪除＝還原）、沒有紀錄時可取消信封
+function lifeFoot(d, it, isNow) {
+  const pays = (d.life && d.life.pays) || [];
+  let f = '<div class="row" style="margin-top:8px"><span style="font-size:13px">可支付 <b class="' + (it.balance > 0 ? 'ok' : 'done') + '">$' + fmt(Math.max(0, it.balance)) + '</b>（不用歸還）</span>' +
+    (isNow ? '<button class="chip" data-ev="lifepay" data-k="' + esc(it.key) + '" style="height:34px;font-size:12px;border-color:var(--green);color:var(--green)">從生活備用支付</button>' : '') + '</div>';
+  if (pays.length) f += '<div style="margin-top:6px">' + pays.map(function (p) {
+    return '<div class="row" style="padding:4px 0;border-top:1px solid var(--chip);font-size:12px"><span style="flex:1;min-width:0">' + esc(p.date) + ' ' + esc(p.cat) + (p.reason ? '｜' + esc(p.reason) : '') + '</span><b style="margin:0 8px">$' + fmt(p.amount) + '</b>' +
+      '<button class="chip" data-ev="lifedel" data-row="' + p.row + '" style="height:28px;font-size:11px">刪除</button></div>';
+  }).join('') + '</div>';
+  else f += '<div style="margin-top:6px"><button class="chip" data-ev="lifeundo" style="height:28px;font-size:11px;color:var(--sub)">取消生活備用信封</button></div>';
+  return f;
+}
+function openLifePay(key) {
+  const it = S.env.accounts.reduce(function (s2, a) { return s2.concat(a.items); }, []).filter(function (x) { return x.key === key; })[0];
+  S.lp = { cat: '其他', force: false, rid: newRid() };   // 同一次支付（含重試）用同一個請求編號
+  const draw = function (msg) {
+    $('modalBox').innerHTML = '<b style="font-size:16px">從生活備用支付</b>' +
+      '<div class="sub" style="font-size:13px;line-height:1.6">信封目前 <b class="ok">$' + fmt(Math.max(0, it.balance)) + '</b>。用在醫療、修繕、家具家用、紅包禮金這類必要支出；出遊娛樂請用日常預算。</div>' +
+      '<label class="sub">金額<input class="f" id="lpAmt" inputmode="numeric" placeholder="最多 ' + fmt(Math.max(0, it.balance)) + '"></label>' +
+      '<div class="sub">這筆支出記在哪個科目</div><div class="cats">' + ['其他', '食物', '教育', '娛樂', '油料', '奉獻'].map(function (c) { return '<button class="chip' + (S.lp.cat === c ? ' on' : '') + '" data-lp="cat" data-v="' + c + '">' + c + '</button>'; }).join('') + '</div>' +
+      '<label class="sub">用途（選填）<input class="f" id="lpNote" placeholder="例如：飲水機修理"></label>' +
+      (msg ? '<div class="over" style="font-size:13px;line-height:1.5">' + esc(msg) + '</div>' : '') +
+      '<div class="sub" style="font-size:12px;line-height:1.5">會在試算表記一筆「永豐 → 郵局日常戶」，本月可花的錢和該科目預算同時增加，不用歸還。支出本身請照常記帳。</div>' +
+      '<div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)"><button class="submit" style="background:var(--card);color:var(--ink);border:1px solid var(--line2);margin:0" data-lp="cancel">取消</button><button class="submit" style="margin:0;background:var(--green)" data-lp="ok">' + (S.lp.force ? '仍要支付' : '確定支付') + '</button></div>';
+  };
+  openModal(''); draw();
+  $('modalBox').onclick = function (e) {
+    const b = e.target.closest('[data-lp]'); if (!b) return;
+    if (b.dataset.lp === 'cancel') return closeModal();
+    if (b.dataset.lp === 'cat') { const a = $('lpAmt').value, n = $('lpNote').value; S.lp.cat = b.dataset.v; draw(); $('lpAmt').value = a; $('lpNote').value = n; return; }
+    const v = Math.round(evalExpr($('lpAmt').value)); if (isNaN(v) || v <= 0) return toast('請輸入金額');
+    const note = $('lpNote').value;
+    if (v > Math.max(0, it.balance) && !S.lp.force) { S.lp.force = true; draw('超過信封目前的 $' + fmt(Math.max(0, it.balance)) + '，超過的部分會由永豐帳戶的緩衝底金墊付。確定要支付，請再按一次「仍要支付」。'); $('lpAmt').value = v; $('lpNote').value = note; return; }
+    b.disabled = true;
+    call('lifePay', { amount: v, cat: S.lp.cat, note: note, force: S.lp.force, rid: S.lp.rid }).then(function (r) { closeModal(); toast(r.message, 4200); clearCaches(); afterWrite(); openEnv(); }).catch(function (er) { b.disabled = false; err(er); });
+  };
 }
 $('v-env').addEventListener('click', function (e) {
   const b = e.target.closest('[data-ev],[data-act]'); if (!b) return;
@@ -2122,6 +2166,10 @@ $('v-env').addEventListener('click', function (e) {
   if (k === 'ev-prev' || k === 'ev-next') return openEnv(ymAdd(S.envYM, k === 'ev-prev' ? -1 : 1));
   if (k === 'repay') { if (!confirm('確定已從日常戶轉回？')) return; b.disabled = true; return call('repay', { id: b.dataset.id }).then(function (r) { toast(r.message, 3000); clearCaches(); afterWrite(); openEnv(); }).catch(err); }
   if (k === 'borrow') return openBorrow(b.dataset.k);
+  if (k === 'lifepay') return openLifePay(b.dataset.k);
+  if (k === 'lifesetup') { if (!confirm('建立 ' + S.env.y + ' 年生活備用信封？會改動試算表（永豐新增兩列、總表永豐存入、各月「其他」預算），改之前的內容會備份。')) return; b.disabled = true; return call('lifeSetup', { y: S.env.y }).then(function (r) { toast(r.message, 4200); clearCaches(); afterWrite(); openEnv(); }).catch(function (er) { b.disabled = false; err(er); }); }
+  if (k === 'lifeundo') { if (!confirm('取消生活備用信封？試算表會還原成建立前的樣子。')) return; b.disabled = true; return call('lifeUndo', { y: S.env.y }).then(function (r) { toast(r.message, 4200); clearCaches(); afterWrite(); openEnv(); }).catch(function (er) { b.disabled = false; err(er); }); }
+  if (k === 'lifedel') { if (!confirm('刪除這筆生活備用支付？永豐的支付金額和科目預算會一起扣回來。')) return; b.disabled = true; return call('deleteLog', { y: S.env.y, row: +b.dataset.row }).then(function (r) { toast(r.message); clearCaches(); afterWrite(); openEnv(); }).catch(function (er) { b.disabled = false; err(er); }); }
 });
 function openBorrow(key) {
   const it = S.env.accounts.reduce(function (s2, a) { return s2.concat(a.items); }, []).filter(function (x) { return x.key === key; })[0];
