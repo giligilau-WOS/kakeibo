@@ -227,9 +227,9 @@ body.typing #v-entry .dock{display:none}   /* 打文字時（手機鍵盤彈出�
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.23-1800';
+const APP_VERSION = '2026.11.23-2000';
 // 這個前端需要的最低後端版本（Code_單一檔案版.gs 的 BACKEND_VERSION）。前端用到後端新功能時要跟著調高。
-const NEED_BACKEND = '2026.11.23-1800';
+const NEED_BACKEND = '2026.11.23-2000';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -2084,6 +2084,7 @@ function renderEnv() {
   if (d.life && !d.life.ready) {
     h += '<div class="card" style="border:1px solid var(--green)"><b style="font-size:15px">生活備用信封（還沒建立）</b>' +
       '<div class="sub" style="font-size:13px;line-height:1.6;margin-top:4px">醫療、修繕、家具家用、紅包禮金這類不規則但必要的支出，每月先存 <b>$' + fmt(d.life.monthly) + '</b> 到永豐；用到時從信封支付到日常，<b>不用歸還</b>。</div>' +
+      '<div style="font-size:13px;line-height:1.6;margin-top:6px"><b>錢放在：</b>' + esc(d.life.where || '') + '</div>' +
       '<div class="sub" style="font-size:12px;line-height:1.6;margin-top:6px">建立時會改試算表：永豐表最下方新增兩列；總表每月永豐存入 +$' + fmt(d.life.monthly) + '；各月「其他」預算 −$' + fmt(d.life.monthly) + '（總預算和永豐回補都不變）。改之前的內容會備份，還沒有支付紀錄前都可以取消。</div>' +
       '<button class="chip" data-ev="lifesetup" style="height:36px;margin-top:8px;border-color:var(--green);color:var(--green)">建立 ' + d.y + ' 年生活備用信封</button></div>';
   }
@@ -2125,7 +2126,8 @@ function renderEnv() {
 // 生活備用：支付按鈕、今年的支付紀錄（可刪除＝還原）、沒有紀錄時可取消信封
 function lifeFoot(d, it, isNow) {
   const pays = (d.life && d.life.pays) || [];
-  let f = '<div class="row" style="margin-top:8px"><span style="font-size:13px">可支付 <b class="' + (it.balance > 0 ? 'ok' : 'done') + '">$' + fmt(Math.max(0, it.balance)) + '</b>（不用歸還）</span>' +
+  let f = (d.life && d.life.where ? '<div class="sub" style="font-size:12px;line-height:1.6;margin-top:6px"><b>錢放在：</b>' + esc(d.life.where) + '</div>' : '') +
+    '<div class="row" style="margin-top:8px"><span style="font-size:13px">可支付 <b class="' + (it.balance > 0 ? 'ok' : 'done') + '">$' + fmt(Math.max(0, it.balance)) + '</b>（不用歸還）</span>' +
     (isNow ? '<button class="chip" data-ev="lifepay" data-k="' + esc(it.key) + '" style="height:34px;font-size:12px;border-color:var(--green);color:var(--green)">從生活備用支付</button>' : '') + '</div>';
   if (pays.length) f += '<div style="margin-top:6px">' + pays.map(function (p) {
     return '<div class="row" style="padding:4px 0;border-top:1px solid var(--chip);font-size:12px"><span style="flex:1;min-width:0">' + esc(p.date) + ' ' + esc(p.cat) + (p.reason ? '｜' + esc(p.reason) : '') + '</span><b style="margin:0 8px">$' + fmt(p.amount) + '</b>' +

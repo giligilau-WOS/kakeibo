@@ -40,6 +40,7 @@ test('生活備用：建立後再還原，整本試算表一格不差；重複�
     assert.equal(bookSnap(wb.book), s1, '第二次建立不能改東西');
     g.call('undoLife_', 2027); g.nextRequest();
     assert.equal(bookSnap(wb.book), s0, '還原後要和建立前完全相同');
+    assert.equal(wb.yf.notes.get('68,1') || '', '', '還原後註記也要清掉');
     assert.equal(g.props.get('LIFE_BAK_2027'), undefined);
     assert.throws(() => g.call('undoLife_', 2027), /備份/);
   }
@@ -125,4 +126,11 @@ test('生活備用：同一筆支付送兩次（逾時重送）只記一筆；�
     assert.equal(g.call('readLog_', 2027).filter(l => l.type === '生活備用').length, rids.length, '送了 ' + sends + ' 次');
     assert.equal(row67(wb)[2], amt * rids.length);
   }
+});
+
+test('生活備用：試算表與信封資料都寫出錢放在永豐活存', () => {
+  const { g, wb } = fresh(9800);
+  g.call('setupLife_', 2027, 4000); g.nextRequest();
+  assert.match(wb.yf.notes.get('68,1'), /永豐 DAWHO 活存/);
+  assert.match(g.call('getEnvelopes_', 2027, 3).life.where, /永豐 DAWHO 活存.*不是緊急備用金定存/);
 });

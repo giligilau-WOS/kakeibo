@@ -28,7 +28,7 @@ const CONFIG = {
 
 // 後端版本：每次修改這個檔案都要更新（tools/check.mjs 會檢查）。
 // 前端 index.html 的 NEED_BACKEND 若比這個新，App 會提醒「後端還沒部署新版本」。
-const BACKEND_VERSION = '2026.11.23-1800';
+const BACKEND_VERSION = '2026.11.23-2000';
 
 // 各年度檔案的差異（儲存格位置）
 const PROFILE = {
@@ -757,6 +757,10 @@ function getAllocation_(y, m) {
     add('郵局日常戶', '永豐定存', emer, '緊急備用金');
     add('郵局日常戶', '元大交割戶', g2, '投資');
     toSino = h2; sinoNote = '平滑中心＋0050 定期定額';
+    if (lifeReady_(y)) {   // 生活備用的錢也在這一筆裡，留在永豐活存
+      const L = LIFE[y], life = num_(ss_(y).getSheetByName(L.sheet).getRange(L.allocRow, L.col0 + m - 1).getValue());
+      if (life) sinoNote = '平滑中心＋生活備用 $' + fmt_(life) + '（留在永豐活存）＋0050 定期定額';
+    }
   } else {
     // 2026：回補分成永豐、郵局優存、台銀三個來源
     const col = 1 + m;
@@ -1677,7 +1681,8 @@ function setEcard_(a) {
 const LIFE = {
   2027: { sheet: '永豐銀行準備金定期定額', payRow: 67, allocRow: 68, col0: 2, cutCol: 7, monthly: 4000,
           payLabel: '【生活備用】實際支付到日常戶（醫療、修繕、家用、禮金；App 自動寫入）',
-          allocLabel: '【生活備用】每月存入（由「其他」預算撥出）' }
+          allocLabel: '【生活備用】每月存入（由「其他」預算撥出；錢放在永豐活存）',
+          where: '永豐 DAWHO 活存（和稅保學費平滑中心同一個帳戶，不是緊急備用金定存）。每月初發薪日跟「永豐準備金」一起轉入；要用時從永豐轉到郵局日常戶。' }
 };
 const LIFE_LOG = '生活備用';
 const ENV = {
@@ -1794,7 +1799,7 @@ function getEnvelopes_(y, m) {
              carryTotal: items.reduce(function (s, x) { return s + x.carry; }, 0), carryActual: a.carryIn ? a.carryActual : null };
   });
   const life = LIFE[y] ? {
-    ready: lifeReady_(y), monthly: LIFE[y].monthly,
+    ready: lifeReady_(y), monthly: LIFE[y].monthly, where: LIFE[y].where,
     pays: readLog_(y).filter(function (l) { return l.type === LIFE_LOG; }).map(function (l) { return { row: l.row, date: l.date, m: l.m, amount: l.amount, cat: l.note, reason: (function () { try { return JSON.parse(l.data || '{}').reason || ''; } catch (e) { return ''; } })() }; })
   } : null;
   return { y: y, m: m, accounts: accounts, borrows: borrows, life: life };
@@ -1911,7 +1916,7 @@ function setupLife_(y, monthly) {
     plan.push([keep(y + '年' + (i + 1) + '月', 'G' + 7), '-' + Q + c + L.allocRow, Q + c + L.allocRow]);
   }
   PropertiesService.getScriptProperties().setProperty('LIFE_BAK_' + y, JSON.stringify(bak));
-  yf.getRange(L.payRow, 1).setValue(L.payLabel); yf.getRange(L.allocRow, 1).setValue(L.allocLabel);
+  yf.getRange(L.payRow, 1).setValue(L.payLabel); yf.getRange(L.allocRow, 1).setValue(L.allocLabel).setNote('錢放在：' + L.where);
   for (let i = 0; i < 12; i++) { yf.getRange(L.payRow, 2 + i).setValue(0); yf.getRange(L.allocRow, 2 + i).setValue(amt); }
   yf.getRange(L.payRow, 14).setFormula('=SUM(B' + L.payRow + ':M' + L.payRow + ')');
   yf.getRange(L.allocRow, 14).setFormula('=SUM(B' + L.allocRow + ':M' + L.allocRow + ')');
@@ -1928,6 +1933,7 @@ function undoLife_(y) {
   if (!raw) throw new Error('找不到建立前的備份，沒有做任何修改');
   const s = ss_(y);
   JSON.parse(raw).forEach(function (b) { const r = s.getSheetByName(b[0]).getRange(b[1]); if (b[2]) r.setFormula(b[2]); else r.setValue(b[3]); });
+  s.getSheetByName(L.sheet).getRange(L.allocRow, 1).setNote('');
   props.deleteProperty('LIFE_BAK_' + y);
   SpreadsheetApp.flush(); bumpVer_();
   return { ok: true, message: '已取消 ' + y + ' 年生活備用信封，相關儲存格都還原成建立前的樣子' };
@@ -1947,7 +1953,7 @@ function lifePay_(a) {
   const cat = CATS.indexOf(a.cat) >= 0 ? a.cat : '其他';
   appendLog_(y, { type: LIFE_LOG, date: todayStr_(), m: m, name: '生活備用', amount: amt, acct: '永豐', target: it.key, note: cat,
                   data: JSON.stringify({ absorbed: dr.absorbed, extra: amt - dr.absorbed, cat: cat, reason: a.note || '', deltas: dr.deltas }) });
-  return { ok: true, message: '已從生活備用支付 $' + fmt_(amt) + '，' + cat + '預算 +$' + fmt_(amt) + '（不用歸還）。記得從永豐轉 $' + fmt_(amt) + ' 到郵局日常戶。' };
+  return { ok: true, message: '已從生活備用支付 $' + fmt_(amt) + '，' + cat + '預算 +$' + fmt_(amt) + '（不用歸還）。記得從永豐活存轉 $' + fmt_(amt) + ' 到郵局日常戶。' };
 }
 
 // ===== 22. 從 GitHub 自我更新（取代手動貼上＋部署）=====
