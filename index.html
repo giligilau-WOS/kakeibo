@@ -227,9 +227,9 @@ body.typing #v-entry .dock{display:none}   /* 打文字時（手機鍵盤彈出�
 <div id="modal"><div class="box" id="modalBox"></div></div>
 
 <script>
-const APP_VERSION = '2026.11.23-2000';
+const APP_VERSION = '2026.11.24-1200';
 // 這個前端需要的最低後端版本（Code_單一檔案版.gs 的 BACKEND_VERSION）。前端用到後端新功能時要跟著調高。
-const NEED_BACKEND = '2026.11.23-2000';
+const NEED_BACKEND = '2026.11.24-1200';
 const CFG = (function () { try { return JSON.parse(localStorage.getItem('kakeiboCfg') || 'null'); } catch (e) { return null; } })();
 const TOKEN = CFG ? CFG.k : '';
 const S = { view: 'entry', form: null, dash: null, chartYM: null, catYM: null, cat: null, recYM: null, recFilter: '全部', recSearch: '', assetYM: null,
@@ -2081,6 +2081,7 @@ function renderEnv() {
         '<button class="chip" data-ev="repay" data-id="' + esc(b.id) + '" style="height:34px;font-size:12px">已歸還</button></div>';
     }).join('') + '<div class="sub" style="font-size:11px;margin-top:6px">按「已歸還」會在試算表記一筆「日常戶 → 預扣帳戶」，並從當月可花的錢扣掉。</div></div>';
   }
+  if (d.ef) h += efCard(d, isNow);
   if (d.life && !d.life.ready) {
     h += '<div class="card" style="border:1px solid var(--green)"><b style="font-size:15px">生活備用信封（還沒建立）</b>' +
       '<div class="sub" style="font-size:13px;line-height:1.6;margin-top:4px">醫療、修繕、家具家用、紅包禮金這類不規則但必要的支出，每月先存 <b>$' + fmt(d.life.monthly) + '</b> 到永豐；用到時從信封支付到日常，<b>不用歸還</b>。</div>' +
@@ -2122,6 +2123,53 @@ function renderEnv() {
   });
   h += '<div class="sub" style="font-size:11px;line-height:1.6;margin:12px 0">信封餘額＝1 月到本月的預存 − 實支（本月應繳視為已繳）；年底預估再加上 12 月為止的預存與實支。2026 年 5 月「投資轉出」算在綜所稅、10 月「信用卡帳單代繳」算在小布丁夏令營。「可調用」＝借出後直到年底都不會透支的金額。</div>';
   el.innerHTML = h;
+}
+// 緊急備用金：日常不夠時優先從這裡動用（不提醒歸還，隔年 2 月年終補回）
+function efCard(d, isNow) {
+  const e = d.ef, pct = Math.max(0, Math.min(100, Math.round(e.current / e.target * 100)));
+  if (!e.ready) return '<div class="card" style="border:1px solid var(--green)"><b style="font-size:15px">緊急備用金（還沒啟用動用功能）</b>' +
+    '<div class="sub" style="font-size:13px;line-height:1.6;margin-top:4px">日常不夠時，優先從緊急備用金（永豐定存）動用，不動信封的錢；<b>不用每月歸還</b>，隔年 2 月年終照「補到 $' + fmt(e.target) + '」補回。</div>' +
+    '<div class="sub" style="font-size:12px;line-height:1.6;margin-top:6px">啟用時會改試算表：永豐表新增一列記動用金額；總表緊急備用金累計扣掉它、收入表日常收入加上它。永豐活存和各信封都不受影響。改之前的內容會備份，還沒有動用紀錄前都可以取消。</div>' +
+    '<button class="chip" data-ev="efsetup" style="height:36px;margin-top:8px;border-color:var(--green);color:var(--green)">啟用 ' + d.y + ' 年緊急備用金動用</button></div>';
+  let f = '<div class="card" style="border:1px solid var(--green)"><div class="row"><b style="font-size:16px">緊急備用金（永豐定存）</b><span class="ok" style="font-size:20px;font-weight:700">' + money(e.current) + '</span></div>' +
+    '<div style="height:10px;border-radius:5px;background:var(--chip);overflow:hidden;margin-top:8px"><i style="display:block;height:100%;width:' + pct + '%;background:var(--green)"></i></div>' +
+    '<div class="sub" style="font-size:12px;line-height:1.6;margin-top:6px">目標 $' + fmt(e.target) + '，達成 ' + pct + '%。日常不夠時<b>先從這裡動用</b>，不動信封；不用每月歸還，隔年 2 月年終補回。</div>' +
+    '<div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">' +
+    (isNow && e.current > 0 ? '<button class="chip" data-ev="efuse" style="height:34px;font-size:12px;border-color:var(--green);color:var(--green)">從緊急備用金動用</button>' : '') +
+    (isNow ? '<button class="chip" data-ev="efrepay" style="height:34px;font-size:12px">補回</button>' : '') + '</div>';
+  if (e.uses.length) f += '<div style="margin-top:6px">' + e.uses.map(function (u) {
+    return '<div class="row" style="padding:4px 0;border-top:1px solid var(--chip);font-size:12px"><span style="flex:1;min-width:0">' + esc(u.date) + ' ' + (u.amount > 0 ? '動用｜' + esc(u.cat) : '補回') + (u.reason ? '｜' + esc(u.reason) : '') + '</span><b style="margin:0 8px">' + (u.amount > 0 ? '−' : '+') + '$' + fmt(Math.abs(u.amount)) + '</b>' +
+      '<button class="chip" data-ev="efdel" data-row="' + u.row + '" style="height:28px;font-size:11px">刪除</button></div>';
+  }).join('') + '</div>';
+  else f += '<div style="margin-top:6px"><button class="chip" data-ev="efundo" style="height:28px;font-size:11px;color:var(--sub)">取消緊急備用金動用功能</button></div>';
+  return f + '</div>';
+}
+function openEfUse(repay) {
+  const e = S.env.ef;
+  S.ef = { cat: '其他', force: false, rid: newRid() };   // 同一次動用（含重試）用同一個請求編號
+  const draw = function (msg) {
+    $('modalBox').innerHTML = '<b style="font-size:16px">' + (repay ? '補回緊急備用金' : '從緊急備用金動用') + '</b>' +
+      '<div class="sub" style="font-size:13px;line-height:1.6">緊急備用金目前 <b class="ok">$' + fmt(Math.max(0, e.current)) + '</b>（目標 $' + fmt(e.target) + '）。' +
+      (repay ? '補回＝從郵局日常戶轉回永豐定存，本月可花的錢會減少。' : '動用的錢不用每月歸還，隔年 2 月年終補回。') + '</div>' +
+      '<label class="sub">金額<input class="f" id="efAmt" inputmode="numeric" placeholder="' + (repay ? '例如 5000' : '最多 ' + fmt(Math.max(0, e.current))) + '"></label>' +
+      (repay ? '' : '<div class="sub">加到本月哪個科目</div><div class="cats">' + ['其他', '食物', '教育', '娛樂', '油料', '奉獻'].map(function (c) { return '<button class="chip' + (S.ef.cat === c ? ' on' : '') + '" data-ef="cat" data-v="' + c + '">' + c + '</button>'; }).join('') + '</div>') +
+      '<label class="sub">' + (repay ? '備註' : '用途') + '（選填）<input class="f" id="efNote" placeholder="' + (repay ? '例如：年中獎金補回' : '例如：機車大修') + '"></label>' +
+      (msg ? '<div class="over" style="font-size:13px;line-height:1.5">' + esc(msg) + '</div>' : '') +
+      '<div class="sub" style="font-size:12px;line-height:1.5">' + (repay ? '會在試算表記一筆「郵局日常戶 → 永豐定存」。' : '會在試算表記一筆「永豐定存 → 郵局日常戶」，本月可花的錢和該科目預算同時增加。記得到永豐解約定存、轉到郵局日常戶。') + '</div>' +
+      '<div class="grid2" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr)"><button class="submit" style="background:var(--card);color:var(--ink);border:1px solid var(--line2);margin:0" data-ef="cancel">取消</button><button class="submit" style="margin:0;background:var(--green)" data-ef="ok">' + (repay ? '確定補回' : (S.ef.force ? '仍要動用' : '確定動用')) + '</button></div>';
+  };
+  openModal(''); draw();
+  $('modalBox').onclick = function (ev) {
+    const b = ev.target.closest('[data-ef]'); if (!b) return;
+    if (b.dataset.ef === 'cancel') return closeModal();
+    if (b.dataset.ef === 'cat') { const a = $('efAmt').value, n = $('efNote').value; S.ef.cat = b.dataset.v; draw(); $('efAmt').value = a; $('efNote').value = n; return; }
+    const v = Math.round(evalExpr($('efAmt').value)); if (isNaN(v) || v <= 0) return toast('請輸入金額');
+    const note = $('efNote').value;
+    if (!repay && v > Math.max(0, e.current) && !S.ef.force) { S.ef.force = true; draw('超過緊急備用金目前的 $' + fmt(Math.max(0, e.current)) + '。確定要動用，請再按一次「仍要動用」。'); $('efAmt').value = v; $('efNote').value = note; return; }
+    b.disabled = true;
+    call(repay ? 'efRepay' : 'efUse', repay ? { amount: v, note: note, rid: S.ef.rid } : { amount: v, cat: S.ef.cat, note: note, force: S.ef.force, rid: S.ef.rid })
+      .then(function (r) { closeModal(); toast(r.message, 4200); clearCaches(); afterWrite(); openEnv(); }).catch(function (er) { b.disabled = false; err(er); });
+  };
 }
 // 生活備用：支付按鈕、今年的支付紀錄（可刪除＝還原）、沒有紀錄時可取消信封
 function lifeFoot(d, it, isNow) {
@@ -2169,6 +2217,11 @@ $('v-env').addEventListener('click', function (e) {
   if (k === 'repay') { if (!confirm('確定已從日常戶轉回？')) return; b.disabled = true; return call('repay', { id: b.dataset.id }).then(function (r) { toast(r.message, 3000); clearCaches(); afterWrite(); openEnv(); }).catch(err); }
   if (k === 'borrow') return openBorrow(b.dataset.k);
   if (k === 'lifepay') return openLifePay(b.dataset.k);
+  if (k === 'efuse') return openEfUse(false);
+  if (k === 'efrepay') return openEfUse(true);
+  if (k === 'efsetup') { if (!confirm('啟用 ' + S.env.y + ' 年緊急備用金動用？會改動試算表（永豐新增一列、總表緊急備用金與收入表公式），改之前的內容會備份。')) return; b.disabled = true; return call('efSetup', { y: S.env.y }).then(function (r) { toast(r.message, 4200); clearCaches(); afterWrite(); openEnv(); }).catch(function (er) { b.disabled = false; err(er); }); }
+  if (k === 'efundo') { if (!confirm('取消緊急備用金動用功能？試算表會還原成啟用前的樣子。')) return; b.disabled = true; return call('efUndo', { y: S.env.y }).then(function (r) { toast(r.message, 4200); clearCaches(); afterWrite(); openEnv(); }).catch(function (er) { b.disabled = false; err(er); }); }
+  if (k === 'efdel') { if (!confirm('刪除這筆紀錄？試算表的金額和科目預算會一起還原。')) return; b.disabled = true; return call('deleteLog', { y: S.env.y, row: +b.dataset.row }).then(function (r) { toast(r.message); clearCaches(); afterWrite(); openEnv(); }).catch(function (er) { b.disabled = false; err(er); }); }
   if (k === 'lifesetup') { if (!confirm('建立 ' + S.env.y + ' 年生活備用信封？會改動試算表（永豐新增兩列、總表永豐存入、各月「其他」預算），改之前的內容會備份。')) return; b.disabled = true; return call('lifeSetup', { y: S.env.y }).then(function (r) { toast(r.message, 4200); clearCaches(); afterWrite(); openEnv(); }).catch(function (er) { b.disabled = false; err(er); }); }
   if (k === 'lifeundo') { if (!confirm('取消生活備用信封？試算表會還原成建立前的樣子。')) return; b.disabled = true; return call('lifeUndo', { y: S.env.y }).then(function (r) { toast(r.message, 4200); clearCaches(); afterWrite(); openEnv(); }).catch(function (er) { b.disabled = false; err(er); }); }
   if (k === 'lifedel') { if (!confirm('刪除這筆生活備用支付？永豐的支付金額和科目預算會一起扣回來。')) return; b.disabled = true; return call('deleteLog', { y: S.env.y, row: +b.dataset.row }).then(function (r) { toast(r.message); clearCaches(); afterWrite(); openEnv(); }).catch(function (er) { b.disabled = false; err(er); }); }
@@ -2179,6 +2232,7 @@ function openBorrow(key) {
   const draw = function (msg) {
     $('modalBox').innerHTML = '<b style="font-size:16px">從「' + esc(it.name) + '」調用到日常</b>' +
       '<div class="sub" style="font-size:13px;line-height:1.6">信封餘額 $' + fmt(it.balance) + '，可安全調用 <b class="ok">$' + fmt(it.safe) + '</b>' + (it.next ? '（下次 ' + it.next.m + ' 月要繳 $' + fmt(it.next.amount) + '）' : '') + '。</div>' +
+      (S.env.ef && S.env.ef.ready && S.env.ef.current > 0 ? '<div style="font-size:13px;line-height:1.6;padding:8px 10px;border-radius:10px;background:var(--amberSoft);color:var(--amberInk)">建議先從<b>緊急備用金</b>動用（目前還有 $' + fmt(S.env.ef.current) + '，不用每月歸還），信封的錢留給到期的帳單。</div>' : '') +
       '<label class="sub">金額<input class="f" id="bwAmt" inputmode="numeric" placeholder="最多 ' + fmt(it.safe) + '"></label>' +
       '<div class="sub">加到本月哪個科目</div><div class="cats">' + ['食物', '油料', '娛樂', '其他', '教育', '奉獻'].map(function (c) { return '<button class="chip' + (S.bw.cat === c ? ' on' : '') + '" data-bw="cat" data-v="' + c + '">' + c + '</button>'; }).join('') + '</div>' +
       '<label class="sub">原因（選填）<input class="f" id="bwNote" placeholder="例如：月底聚餐"></label>' +

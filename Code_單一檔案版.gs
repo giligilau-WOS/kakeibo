@@ -28,7 +28,7 @@ const CONFIG = {
 
 // 後端版本：每次修改這個檔案都要更新（tools/check.mjs 會檢查）。
 // 前端 index.html 的 NEED_BACKEND 若比這個新，App 會提醒「後端還沒部署新版本」。
-const BACKEND_VERSION = '2026.11.23-2000';
+const BACKEND_VERSION = '2026.11.24-1200';
 
 // 各年度檔案的差異（儲存格位置）
 const PROFILE = {
@@ -177,7 +177,7 @@ function api(k, method, args) {
 // ---- 防止重送重複記帳：前端每筆記帳／繳費都帶一個請求編號 rid ----
 // 情境：試算表已經寫入，但手機沒收到回應（逾時），App 放進離線佇列再送一次。
 // 同一個 rid 第二次送來時直接略過，不再寫入。最近 200 個 rid 存在 Script Properties。
-const RID_METHODS = { add: true, payPrepaid: true, saveSub: true, undoSub: true, undoAdd: true, lifePay: true };
+const RID_METHODS = { add: true, payPrepaid: true, saveSub: true, undoSub: true, undoAdd: true, lifePay: true, efUse: true, efRepay: true };
 const RID_KEEP = 200;
 function ridMap_() { try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('RIDS') || '{}'); } catch (e) { return {}; } }
 function ridSave_(map) {
@@ -247,6 +247,10 @@ function route_(method, args) {
     case 'lifePay': return lifePay_(args);
     case 'lifeSetup': return setupLife_(+args.y, args.monthly);
     case 'lifeUndo': return undoLife_(+args.y);
+    case 'efSetup': return setupEf_(+args.y);
+    case 'efUndo': return undoEf_(+args.y);
+    case 'efUse': return efUse_(args);
+    case 'efRepay': return efRepay_(args);
     case 'ecard': return { balance: ecardBalance_(), state: ecardState_() };
     case 'setEcard': return setEcard_(args);
     case 'tax': return getTax_(args.y);
@@ -1117,6 +1121,7 @@ function deleteLog_(y, row) {
   const r = readLog_(+y).filter(function (x) { return x.row === row; })[0];
   if (r && r.type === '繳費' && r.data) replayPrepaid_(+y, sh, r);   // 還原攤平表
   if (r && r.type === LIFE_LOG && LIFE[+y]) { const L = LIFE[+y]; addBorrowCell_(+y, r.m, { sheet: L.sheet, row: L.payRow, col0: L.col0 }, -r.amount); }   // 還原生活備用支付
+  if (r && (r.type === EF_LOG || r.type === EF_REPAY_LOG) && EFUSE[+y]) { const E = EFUSE[+y]; addBorrowCell_(+y, r.m, { sheet: E.sheet, row: E.row, col0: E.col0 }, r.type === EF_LOG ? -r.amount : r.amount); }   // 還原備用金動用／補回
   sh.deleteRow(row);
   bumpVer_();
   return { ok: true, message: '已刪除紀錄' };
@@ -1636,7 +1641,7 @@ function ensureSchema2_(y) {
       if (tb.getRange(c + '14').getValue() === '') tb.getRange(c + '14').setValue(0);
       yf.getRange(c + '5').setFormula('=SUM(' + c + '10:' + c + '33)+' + c + '59+' + c + '61+' + c + '66+' + c + '67');
       tb.getRange(c + '4').setFormula('=SUM(' + c + '7:' + c + '8)+' + c + '14');
-      inc.getRange(c + '8').setFormula("='" + y + '年' + mon + "月'!B3+'永豐銀行準備金定期定額'!" + c + "66+'永豐銀行準備金定期定額'!" + c + "67+'台銀帳戶_預扣及攤平'!" + c + '14');
+      inc.getRange(c + '8').setFormula("='" + y + '年' + mon + "月'!B3+'永豐銀行準備金定期定額'!" + c + "66+'永豐銀行準備金定期定額'!" + c + "67+'永豐銀行準備金定期定額'!" + c + "69+'台銀帳戶_預扣及攤平'!" + c + '14');
     }
     inc.getRange('A8').setValue('其他(永豐回補：補當月缺額，自動＋信封調用)');
   }
@@ -1685,6 +1690,13 @@ const LIFE = {
           where: '永豐 DAWHO 活存（和稅保學費平滑中心同一個帳戶，不是緊急備用金定存）。每月初發薪日跟「永豐準備金」一起轉入；要用時從永豐轉到郵局日常戶。' }
 };
 const LIFE_LOG = '生活備用';
+// 緊急備用金動用（2027 起）：日常不夠時優先從緊急備用金（永豐定存）動用到日常，不提醒歸還，隔年 2 月年終照「補到 15 萬」補回。
+// 永豐表第 69 列記每月動用（正數）／補回（負數）；總表第 18 列（備用金累計）扣掉它、收入表第 8 列加上它。永豐活存與各信封都不受影響。
+const EFUSE = {
+  2027: { sheet: '永豐銀行準備金定期定額', row: 69, col0: 2,
+          label: '【備用金動用】緊急備用金（永豐定存）轉到日常戶（正數＝動用，負數＝補回；App 自動寫入）' }
+};
+const EF_LOG = '備用金動用', EF_REPAY_LOG = '備用金補回';
 const ENV = {
   // attr：不屬於任何項目的支出列，歸到指定信封（列號 → 信封列號）
   // lines：在帳戶總覽單獨列出的進出（borrow:true 表示也是 App 調用寫入的列）
@@ -1802,7 +1814,14 @@ function getEnvelopes_(y, m) {
     ready: lifeReady_(y), monthly: LIFE[y].monthly, where: LIFE[y].where,
     pays: readLog_(y).filter(function (l) { return l.type === LIFE_LOG; }).map(function (l) { return { row: l.row, date: l.date, m: l.m, amount: l.amount, cat: l.note, reason: (function () { try { return JSON.parse(l.data || '{}').reason || ''; } catch (e) { return ''; } })() }; })
   } : null;
-  return { y: y, m: m, accounts: accounts, borrows: borrows, life: life };
+  const ef = EFUSE[y] && PROFILE[y] && PROFILE[y].emergency ? {
+    ready: efReady_(y), current: Math.round(num_(rowValue_(y, PROFILE[y].emergency, m))), target: CONFIG.emergencyTarget,
+    uses: readLog_(y).filter(function (l) { return l.type === EF_LOG || l.type === EF_REPAY_LOG; }).map(function (l) {
+      let d = {}; try { d = JSON.parse(l.data || '{}'); } catch (e) {}
+      return { row: l.row, date: l.date, m: l.m, amount: l.type === EF_LOG ? l.amount : -l.amount, cat: l.note, reason: d.reason || '' };
+    })
+  } : null;
+  return { y: y, m: m, accounts: accounts, borrows: borrows, life: life, ef: ef };
 }
 // ---- 調用與歸還 ----
 function borrowRowFor_(y, key) {
@@ -1844,7 +1863,7 @@ function borrowEnvelope_(a) {
 // 新紀錄有 deltas：把公式自動補回的金額從原科目扣掉，借入金額全部加到選的科目。
 // 舊紀錄（沒有 deltas）維持舊算法：只把 extra 加到選的科目。
 function borrowExtra_(y, m) {
-  return readLog_(y).filter(function (l) { return (l.type === '調用' || l.type === LIFE_LOG) && l.m === m; }).map(function (l) {
+  return readLog_(y).filter(function (l) { return (l.type === '調用' || l.type === LIFE_LOG || l.type === EF_LOG) && l.m === m; }).map(function (l) {
     let d = {}; try { d = JSON.parse(l.data || '{}'); } catch (e) {}
     const cat = d.cat || l.note, adj = {};
     if (d.deltas && typeof d.deltas === 'object') {
@@ -1938,6 +1957,84 @@ function undoLife_(y) {
   SpreadsheetApp.flush(); bumpVer_();
   return { ok: true, message: '已取消 ' + y + ' 年生活備用信封，相關儲存格都還原成建立前的樣子' };
 }
+// ---- 緊急備用金動用 ----
+function efReady_(y) {
+  const E = EFUSE[y]; if (!E || !ss_(y)) return false;
+  const sh = ss_(y).getSheetByName(E.sheet);
+  return !!sh && String(sh.getRange(E.row, 1).getValue()) === E.label;
+}
+// 啟用時會改到的儲存格（改之前的內容存在 Script Properties「EFUSE_BAK_年度」，還原時照原樣寫回）：
+//   永豐表 A69:N69（新增一列；原本必須是空白）
+//   總表 C18:N18「緊急備用金累計」公式 −永豐第 69 列
+//   收入表 B8:M8「永豐回補」公式 ＋永豐第 69 列（動用的錢算日常收入）
+function setupEf_(y) {
+  y = +y;
+  const E = EFUSE[y]; if (!E) throw new Error(y + ' 年沒有緊急備用金動用的設定');
+  const s = ss_(y); if (!s) throw new Error(y + ' 年的試算表尚未設定');
+  if (efReady_(y)) return { ok: true, already: true, message: y + ' 年的緊急備用金動用已經啟用過了' };
+  const yf = s.getSheetByName(E.sheet), inc = s.getSheetByName('收入'), top = s.getSheetByName('總表');
+  if (!yf || !inc || !top) throw new Error('找不到永豐、收入或總表工作表，沒有做任何修改');
+  if (yf.getRange(E.row, 1, 1, 14).getValues()[0].some(function (x) { return x !== '' && x !== null; })) throw new Error('永豐表第 ' + E.row + ' 列不是空白，為了不蓋掉資料，沒有做任何修改');
+  const COLS = 'BCDEFGHIJKLM', TOPC = 'CDEFGHIJKLMN', Q = "'" + E.sheet + "'!";
+  const bak = [], plan = [];
+  const keep = function (sheet, a1) { const r = s.getSheetByName(sheet).getRange(a1); bak.push([sheet, a1, r.getFormula() || '', r.getFormula() ? '' : r.getValue()]); return r; };
+  for (let c = 1; c <= 14; c++) keep(E.sheet, 'ABCDEFGHIJKLMN'.charAt(c - 1) + E.row);
+  for (let i = 0; i < 12; i++) {
+    const c = COLS.charAt(i);
+    plan.push([keep('總表', TOPC.charAt(i) + '18'), '-' + Q + c + E.row, Q + c + E.row]);
+    plan.push([keep('收入', c + '8'), '+' + Q + c + E.row, Q + c + E.row]);
+  }
+  PropertiesService.getScriptProperties().setProperty('EFUSE_BAK_' + y, JSON.stringify(bak));
+  yf.getRange(E.row, 1).setValue(E.label);
+  for (let i = 0; i < 12; i++) yf.getRange(E.row, 2 + i).setValue(0);
+  yf.getRange(E.row, 14).setFormula('=SUM(B' + E.row + ':M' + E.row + ')');
+  plan.forEach(function (p) {
+    if (p[0].getFormula().indexOf(p[2]) >= 0) return;
+    const f = p[0].getFormula();
+    p[0].setFormula((f ? f : '=' + (num_(p[0].getValue()) || 0)) + p[1]);
+  });
+  SpreadsheetApp.flush(); bumpVer_();
+  return { ok: true, message: '已啟用 ' + y + ' 年緊急備用金動用：之後在信封頁可以從緊急備用金動用到日常。還沒有動用紀錄前，可以按「取消」還原。' };
+}
+function undoEf_(y) {
+  y = +y;
+  const E = EFUSE[y]; if (!E || !ss_(y)) throw new Error(y + ' 年沒有緊急備用金動用的設定');
+  const used = readLog_(y).filter(function (l) { return l.type === EF_LOG || l.type === EF_REPAY_LOG; }).length;
+  if (used) throw new Error('已經有 ' + used + ' 筆緊急備用金動用或補回紀錄，請先刪除那些紀錄再取消');
+  const props = PropertiesService.getScriptProperties(), raw = props.getProperty('EFUSE_BAK_' + y);
+  if (!raw) throw new Error('找不到啟用前的備份，沒有做任何修改');
+  const s = ss_(y);
+  JSON.parse(raw).forEach(function (b) { const r = s.getSheetByName(b[0]).getRange(b[1]); if (b[2]) r.setFormula(b[2]); else r.setValue(b[3]); });
+  props.deleteProperty('EFUSE_BAK_' + y);
+  SpreadsheetApp.flush(); bumpVer_();
+  return { ok: true, message: '已取消 ' + y + ' 年緊急備用金動用，相關儲存格都還原成啟用前的樣子' };
+}
+function efCurrent_(y, m) { return Math.round(num_(rowValue_(y, PROFILE[y].emergency, m))); }
+function efUse_(a) {
+  const t = parseDate_(todayStr_()), y = t.y, m = t.m, amt = Math.round(num_(a.amount));
+  const E = EFUSE[y];
+  if (!E || !efReady_(y)) throw new Error(y + ' 年還沒有啟用緊急備用金動用');
+  if (!amt || amt <= 0) throw new Error('請輸入金額');
+  const cur = efCurrent_(y, m);
+  if (amt > Math.max(0, cur) && !a.force) throw new Error('緊急備用金目前只有 $' + fmt_(Math.max(0, cur)));
+  const dr = drawToDaily_(y, m, { sheet: E.sheet, row: E.row, col0: E.col0 }, amt);
+  const cat = CATS.indexOf(a.cat) >= 0 ? a.cat : '其他';
+  appendLog_(y, { type: EF_LOG, date: todayStr_(), m: m, name: '緊急備用金', amount: amt, acct: '永豐定存', target: 'EF', note: cat,
+                  data: JSON.stringify({ absorbed: dr.absorbed, extra: amt - dr.absorbed, cat: cat, reason: a.note || '', deltas: dr.deltas }) });
+  return { ok: true, message: '已從緊急備用金動用 $' + fmt_(amt) + '，' + cat + '預算 +$' + fmt_(amt) + '（不用每月歸還，明年 2 月年終補回）。記得到永豐解約定存，轉 $' + fmt_(amt) + ' 到郵局日常戶。' };
+}
+function efRepay_(a) {
+  const t = parseDate_(todayStr_()), y = t.y, m = t.m, amt = Math.round(num_(a.amount));
+  const E = EFUSE[y];
+  if (!E || !efReady_(y)) throw new Error(y + ' 年還沒有啟用緊急備用金動用');
+  if (!amt || amt <= 0) throw new Error('請輸入金額');
+  addBorrowCell_(y, m, { sheet: E.sheet, row: E.row, col0: E.col0 }, -amt);
+  SpreadsheetApp.flush(); bumpVer_();
+  appendLog_(y, { type: EF_REPAY_LOG, date: todayStr_(), m: m, name: '緊急備用金', amount: amt, acct: '永豐定存', target: 'EF', note: '', data: JSON.stringify({ reason: a.note || '' }) });
+  return { ok: true, message: '已記錄補回緊急備用金 $' + fmt_(amt) + '（從郵局日常戶轉回永豐定存），本月可花的錢少 $' + fmt_(amt) + '。' };
+}
+function 啟用緊急備用金動用() { Logger.log(setupEf_(2027).message); }
+function 還原緊急備用金動用() { Logger.log(undoEf_(2027).message); }
 function 建立生活備用信封() { Logger.log(setupLife_(2027).message); }
 function 還原生活備用信封() { Logger.log(undoLife_(2027).message); }
 function lifePay_(a) {

@@ -147,6 +147,14 @@ export function buildWorkbook2027(g, R) {
     sh.set(8, 8, budgets.reduce((a, b) => a + b, 0)).set(12, 8, 1000).set(4, 2, 30000);
     top.set(1, 1, '總表');
   }
+  // 總表第 10 列（2 月存緊急備用金）、第 18 列（累計＝上月＋存入－永豐第 69 列動用；假實作不算公式，讀取時用 hook 模擬）
+  const efRow = () => { let c = 0; return Array.from({ length: 12 }, (_, i) => (c += (Number(top.val(10, 3 + i)) || 0) - (Number(yf.val(69, 2 + i)) || 0))); };
+  for (let i = 0; i < 12; i++) {
+    if (i === 1) top.put(10, 3 + i, { v: 46000, f: "=150000-'選單'!H9" }); else top.set(10, 3 + i, 0);
+    top.put(18, 3 + i, { v: 0, f: i === 0 ? '=C10' : '=' + TOPC[i - 1] + '18+' + TOPC[i] + '10' });
+  }
+  efRow().forEach((v, i) => top.put(18, 3 + i, { v, f: top.cell(18, 3 + i).f }));
+  book.readHooks.push(s => { if (s === top) efRow().forEach((v, i) => top.put(18, 3 + i, { v, f: top.cell(18, 3 + i).f })); });
   const tw = book.sheet('台銀帳戶_預扣及攤平');
   for (let m = 1; m <= 12; m++) { tw.set(7, 1 + m, 25318); tw.set(11, 1 + m, 25318); tw.set(5, 1 + m, 3000); tw.set(14, 1 + m, 0); }
   g.props.set('SCHEMA2_2027', '2026-11-01 00:00');

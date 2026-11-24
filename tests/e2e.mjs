@@ -513,7 +513,7 @@ try {
     assert.equal(ledger(), before);
   });
 
-  await step('生活備用（2027/3）：建立信封 → 支付 1,500 → 刪除紀錄還原 → 取消信封，試算表回到原樣', async () => {
+  await step('生活備用與緊急備用金（2027/3）：建立、支付／動用、刪除還原、取消，試算表回到原樣', async () => {
     g.setNow('2027-03-10T10:00:00+08:00');
     const wb = buildWorkbook2027(g, rng(7));
     const snap27 = () => JSON.stringify([...wb.book.sheets].filter(([n]) => n !== 'App紀錄').map(([n, sh]) => [n, [...sh.cells].sort()]));
@@ -559,6 +559,32 @@ try {
       await toast3(/已取消 2027 年生活備用信封/);
       await p3.locator('#v-env [data-ev="lifesetup"]').waitFor();
       assert.equal(snap27(), s0, '取消後 2027 試算表要回到原樣');
+      // 緊急備用金：啟用 → 動用 3,000 到食物 → 調用視窗提示先用備用金 → 刪除紀錄 → 取消
+      await p3.click('#v-env [data-ev="efsetup"]');
+      await toast3(/已啟用 2027 年緊急備用金動用/);
+      await p3.locator('#v-env [data-ev="efuse"]').waitFor();
+      await p3.click('#v-env [data-ev="efuse"]');
+      await p3.fill('#efAmt', '3000');
+      await p3.click('[data-ef="cat"][data-v="食物"]');
+      await p3.fill('#efNote', '機車大修');
+      await p3.screenshot({ path: join(OUT, '33-緊急備用金-動用.png') });
+      await p3.click('[data-ef="ok"]');
+      await toast3(/已從緊急備用金動用 \$3,000，食物預算 \+\$3,000/);
+      await p3.locator('#v-env [data-ev="efdel"]').waitFor();
+      assert.equal(Number(wb.yf.val(69, 4)), 3000, '永豐第 69 列 3 月');
+      const use = lastCall('efUse');
+      assert.equal(use.args.amount, 3000); assert.equal(use.args.cat, '食物'); assert.ok(use.args.rid, '要帶請求編號');
+      await p3.screenshot({ path: join(OUT, '34-緊急備用金-卡片.png') });
+      await p3.locator('#v-env [data-ev="borrow"]').first().click();
+      await p3.waitForFunction(() => /建議先從緊急備用金動用/.test(document.getElementById('modalBox').innerText));
+      await p3.click('[data-bw="cancel"]');
+      await p3.click('#v-env [data-ev="efdel"]');
+      await toast3(/已刪除紀錄/);
+      await p3.locator('#v-env [data-ev="efundo"]').waitFor();
+      assert.equal(Number(wb.yf.val(69, 4)), 0);
+      await p3.click('#v-env [data-ev="efundo"]');
+      await toast3(/已取消 2027 年緊急備用金動用/);
+      await p3.locator('#v-env [data-ev="efsetup"]').waitFor();
     } finally {
       await ctx3.close();
       g.setNow('2026-11-18T10:00:00+08:00');
